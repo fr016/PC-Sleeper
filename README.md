@@ -17,11 +17,12 @@ Once you hit the "Start" button, the countdown begins. At this point, your PC is
 ## Open Source Project
 
 PC Sleeper was written in Powershell
-Source code available on github.com
+Source code available on :
+https://github.com/fr016/PC-Sleeper
 
 ## License
 
-'MIT License
+MIT License
 
 Copyright (c) 2017 Dan Guedj
 
@@ -41,11 +42,12 @@ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.'
+SOFTWARE.
 
 ## Installation
 
-No installation required ,no administrator rights required 
+No installation required ,no administrator rights required,just Run It
+
 System requirements:
 Windows 7 minimum 
 
