@@ -1,0 +1,86 @@
+function GroupADExist ($NomGS, $DomainFQDN = $env:USERDNSDOMAIN, [PSCredential] $Cred)
+{
+	if ($DomainFQDN -eq $env:USERDNSDOMAIN)
+	{
+		$NomGS = $NomGS.ToUpper()
+		try
+		{
+			Get-ADGroup -Identity $NomGS | Out-Null
+		}
+		catch
+		{
+			#AfficheEtLog -message "Le groupe AD $NomGS n'existe pas sur $DomainFQDN " -type Warning
+			return $false
+		}
+		#AfficheEtLog -message "Le groupe AD $NomGS existe bien"
+	}
+	else
+	{
+		$NomGS = $NomGS.ToUpper()
+		try
+		{
+			Get-ADGroup -Identity $NomGS -Server $DomainFQDN -Credential $Cred | Out-Null
+		}
+		catch
+		{
+			#AfficheEtLog -message "Le groupe AD $NomGS n'existe pas sur $DomainFQDN" -type Warning
+			return $false
+		}
+		#AfficheEtLog -message "Le groupe AD $NomGS existe bien"
+	}
+	return $true
+}
+
+
+function MembresDuGroupAD ($nomGroupAD, $DomainFQDN = $env:USERDNSDOMAIN, [PSCredential] $Cred)
+{
+	$DomainFQDN = $DomainFQDN.ToLower()
+	$nomGroupAD = $nomGroupAD.ToLower()
+	$nomGroupAD = $nomGroupAD.replace("$DomainFQDN\", "")
+
+	if ($DomainFQDN -eq $env:USERDNSDOMAIN)
+	{
+		$res = @(Get-ADGroupMember $nomGroupAD)
+		if ($res.Count -gt 0)
+		{
+			return $res.Samaccountname
+		}
+	}
+	else
+	{
+		$res = @(Get-ADGroupMember $nomGroupAD -Server $DomainFQDN -Credential $Cred)
+		if ($res.Count -gt 0)
+		{
+			return $res.Samaccountname
+		}
+	}
+	return @()
+}
+
+Set-Alias -name EstMembreDuGroup -value estDsGrpAD
+function estDsGrpAD ($samUser, $nomGroupAD, $DomainFQDN = $env:USERDNSDOMAIN, [PSCredential] $Cred)
+{
+	$DomainFQDN = $DomainFQDN.ToLower()
+	$nomGroupAD = $nomGroupAD.ToLower()
+	if ($nomGroupAD.Contains("\"))
+	{
+		$nomGroupAD = $nomGroupAD.Split("\")[1]
+	}
+	
+	if ($DomainFQDN -eq $env:USERDNSDOMAIN)
+	{
+		if (!(GroupADExist $nomGroupAD))
+		{
+			return $false
+		}
+		return (((MembresDuGroupAD $nomGroupAD) | Where-Object { $_ -eq $samUser }) -eq $samUser)
+	}
+	else
+	{
+		if (!(GroupADExist $nomGroupAD -DomainFQDN $DomainFQDN -Cred $Cred) -or !(Test-ADUser -SAMAccountName $samUser -DomainFQDN $DomainFQDN -Cred $Cred))
+		{
+			return $false
+		}
+		return (((MembresDuGroupAD $nomGroupAD -DomainFQDN $DomainFQDN -Cred $Cred) | Where-Object { $_ -eq $samUser }) -eq $samUser)
+	}
+}
