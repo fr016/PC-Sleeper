@@ -1,0 +1,218 @@
+<#
+BDD approach:
+
+Feature: You can copy one file
+
+Scenario: The file exists, and the target folder exists
+    Given we have a source file
+    And we have a destination folder
+    When we call Copy-Item
+    Then we have a new file in the destination
+    And the new file is the same as the original file
+    
+#>
+
+$pathScriptDir = Split-Path -parent $MyInvocation.MyCommand.Path
+$pathScript = $PSCommandPath.Replace('.Tests.ps1', '.ps1')
+$dataPath = "$pathScriptDir\data"
+$dataSets = Import-Csv -Path $dataPath\datasSets.csv -Delimiter ";"
+Import-Module -Name $dataPath\Modules\Pester -MinimumVersion 5.3.3
+
+cd $pathScriptDir
+
+BeforeDiscovery {
+  . $pathScript
+
+  $PesterPreference = [PesterConfiguration]::Default
+  $PesterPreference.Output.StackTraceVerbosity = "none"
+  $PesterPreference.Output.Verbosity = "Detailed"
+
+  #region fonction d'assistance
+
+  
+  #a lancer avec l'ISE
+  function Generate-PesterTestsFromBDDscenario
+  {
+    
+    <#
+ex d'utilisation:
+
+
+$scenario = @"
+Scenario: The file exists, and the target folder exists
+    Given we have a source file
+    And we have a destination folder
+    When we call Copy-Item
+    Then we have a new file in the destination
+    And the new file is the same as the original file
+"@
+
+$tests = Generate-PesterTestsFromBDDscenario -Scenario $scenario
+Write-Output $tests 
+
+Describe 'The file exists, and the target folder exists' {         
+    It 'Given we have a source file' {
+        # Code de test a inserer ici
+    }         
+    It 'And we have a destination folder' {
+        # Code de test a inserer ici
+    }         
+    It 'When we call Copy-Item' {
+        # Code de test a inserer ici
+    }         
+    It 'Then we have a new file in the destination' {
+        # Code de test a inserer ici
+    }         
+    It 'And the new file is the same as the original file' {
+        # Code de test a inserer ici
+    }
+}
+#>
+    
+    param (
+      [string]$Scenario
+    )
+
+    # Creer un tableau de lignes en separant le scenario en lignes
+    $lines = $Scenario -split "`n"
+
+    # Recuperer le titre du scenario
+    $title = $lines[0] -replace "Scenario: ", ""
+
+    # Creer un tableau d'etapes a partir des lignes du scenario
+    $steps = $lines[1..($lines.Count - 1)]
+
+    # Generer le code Pester pour les etapes du scenario
+    $pesterCode = @"
+Describe '$title' {
+"@
+    foreach ($step in $steps) 
+    {
+      $pesterCode += @"
+         
+         It '$step' {
+             # Code de test a inserer ici
+         }
+
+"@
+    }
+    $pesterCode += "
+}"
+    $pesterCode = $pesterCode.Replace("It '    ", "It '")
+    # Renvoyer le code Pester genere
+    return $pesterCode
+  }
+
+  Set-Alias -name fd -value FindData
+  function FindData ([parameter(Mandatory = $true)] $ScenarioName)
+  {
+    <#
+    ex :It "Sur le group $((FindData "Sur un group sur le domaine courant")) sur le domaine courant ($env:USERDOMAIN)" {
+    GroupADExist -NomGS (FindData "Sur un group sur le domaine courant") | Should -Be $true
+  }}
+    #>
+    
+    #refresh datasets
+    $dataSets = Import-Csv -Path $dataPath\datasSets.csv -Delimiter ";"
+      
+    return $( Import-Csv -Path $dataPath\datasSets.csv -Delimiter ";" | where Scenario -eq "$ScenarioName").Input
+  }
+
+  function RunTest ($nomTest)
+  {
+    Invoke-Pester -Path .\Get-Emoji.Tests.ps1 -TagFilter "*$nomTest*"
+  }
+
+  #endregion fonction d'assistance
+
+  cd (split-Path $dataPath)
+}
+
+BeforeAll {
+  . $pathScript
+}
+
+#BDD approach:
+Context "BDD Scenarios" {
+  
+  Context "Nominal" {
+
+    Describe "The file exists, and the target folder exists" -Tag "The file exists, and the target folder exists" {
+      It "Given we have a source file" {
+        mkdir testdrive:\source -ErrorAction SilentlyContinue
+        Set-Content 'testdrive:\source\something.txt' -Value 'Data'
+        'testdrive:\source\something.txt' | Should -Exist
+      }
+
+      It "And we have a destination folder" {
+        mkdir testdrive:\target -ErrorAction SilentlyContinue
+        'testdrive:\target' | Should -Exist
+      }
+
+      It "When we call Copy-Item" {
+        { Copy-Item testdrive:\source\something.txt testdrive:\target } | Should -Not -Throw
+      }
+
+      It "Then we have a new file in the destination" {
+        'testdrive:\target\something.txt' | Should -Exist
+      }
+
+      It "And the new file is the same as the original file " {
+        $primary = Get-FileHash testdrive:\target\something.txt
+        $secondary = Get-FileHash testdrive:\source\something.txt
+        $secondary.Hash | Should -Be $primary.Hash
+      }
+      
+    }
+
+  }
+
+  Context "Alternatif" {
+
+  }
+
+  Context "D'exceptions" {
+
+  }
+
+}
+
+<#
+TDD approach
+Rappel:
+Le nom de votre test doit être compose de trois parties (sauf pr les DDT):
+Nom de la fonction testee
+Scenario de test utilise
+Comportement attendu quand le scenario est appele
+#>
+
+#Test Unitaire
+Describe "NomAvecEspace" -Tag "NomAvecEspace" {
+  It "avec un nom compose return True" {
+    NomAvecEspace "Jean Pierre" | Should -Be $true
+  }
+}
+
+#Test Unitaire DDT
+Describe "NomAvecEspace" -Tag "NomAvecEspace" {
+    
+  BeforeEach {
+
+  }
+
+  It "avec <PrenomEtNom> returns <expected>" -ForEach @(
+    @{ PrenomEtNom = "Jean.Mathieu"; expected = $false }
+    @{ PrenomEtNom = "Jean Louis.THIAUCOUR"; expected = $true }
+    @{ PrenomEtNom = "Jean Pierre"; expected = $true }
+  ) {
+    NomAvecEspace -PrenomEtNom $PrenomEtNom | Should -Be $expected
+  }
+
+  AfterEach {
+       
+  }
+}
+
+AfterAll {
+       
+}
