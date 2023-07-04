@@ -1,13 +1,1 @@
 
-Dear [Team],
-
-I hope this email finds you well. I'm writing to provide you with an update on the progress of the GHC Adrac project, specifically regarding the data collection part that I'm working on.
-
-Unfortunately, I have to inform you that the data collection phase is not yet completed. We still have a few more months of work ahead of us to finalize this stage of the project. I understand that you're eager to see the project's complete progress, but I kindly ask for your patience during this period.
-
-Furthermore, it's important to note that the Vue part of the project is being handled by St and Xavier. The progress of the Vue part depends on their work. I encourage you to reach out to them for more specific information regarding that aspect of the project.
-
-I will keep you updated on any significant developments, and I'm available if you have any further questions or concerns. Thank you for your understanding and ongoing collaboration.
-
-Best regards,
-[Your Name]
