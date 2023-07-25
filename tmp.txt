@@ -1,15 +1,1 @@
 
-Objet: Besoin d'assistance avec WinRM et Invoke-Command
-
-Cher [Nom du collègue],
-
-Nous avons un problème concernant l'utilisation de WinRM via Invoke-Command avec un compte de type X. Malheureusement, malgré nos tests, nous n'arrivons pas à le résoudre. Cependant, nous avons remarqué que cela fonctionne parfaitement avec un compte de type Y.
-
-Nous avons déjà vérifié les flux via la commande Z et le port semble bien ouvert. Malgré cela, nous sommes incapables d'utiliser Invoke-Command avec le compte de type X.
-
-Comme tu as une expertise dans ce domaine, pourrais-tu nous aider à diagnostiquer et résoudre ce problème ? Ton assistance serait grandement appréciée pour remettre les choses en marche.
-
-Restant à ta disposition pour fournir plus de détails si nécessaire.
-
-Cordialement,
-L'équipe [Votre équipe]
