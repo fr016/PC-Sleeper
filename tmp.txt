@@ -24,3 +24,57 @@ function Set-XmlPasswordsWithDependency {
 # Utilisation de la fonction pour écraser toutes les balises <password> avec les nouvelles valeurs dépendantes de leurs anciennes valeurs
 Set-XmlPasswordsWithDependency -xmlFilePath "chemin/vers/votre/fichier.xml"
 
+
+
+
+
+
+
+-------------
+
+    $xmlContent | Out-File -FilePath $xmlFilePath -Force
+}
+
+# Utilisation de la fonction pour écraser toutes les balises <password> avec les nouvelles valeurs dépendantes de leurs anciennes valeurs
+Set-XmlPasswordsWithDependency -xmlFilePath "chemin/vers/votre/fichier.xml"
+
+
+
+
+function Set-XmlTagValueWithoutAccents {
+    param(
+        [string]$xmlFilePath,
+        [string]$tagName,
+        [string]$newValue
+    )
+
+    $xmlContent = Get-Content -Path $xmlFilePath -Raw
+    $xmlContent = $xmlContent -replace ("<$tagName>.+?</$tagName>", "<$tagName>$newValue</$tagName>")
+    $xmlContent = [System.Web.HttpUtility]::HtmlEncode($xmlContent)
+
+    $xmlContent | Out-File -FilePath $xmlFilePath -Force
+}
+
+# Utilisation de la fonction
+Set-XmlTagValueWithoutAccents -xmlFilePath "chemin/vers/votre/fichier.xml" -tagName "balise" -newValue "nouvelle valeur"
+
+
+
+function Set-XmlTagValueWithoutAccents {
+    param(
+        [string]$xmlFilePath,
+        [string]$tagName,
+        [string]$regexPattern,
+        [string]$replacement
+    )
+
+    $xmlContent = Get-Content -Path $xmlFilePath -Raw
+
+    $xmlContent = $xmlContent -replace $regexPattern, $replacement
+    $xmlContent = [System.Web.HttpUtility]::HtmlEncode($xmlContent)
+
+    $xmlContent | Out-File -FilePath $xmlFilePath -Force
+}
+
+# Utilisation de la fonction
+Set-XmlTagValueWithoutAccents -xmlFilePath "chemin/vers/votre/fichier.xml" -tagName "balise" -regexPattern "<balise>.+?</balise>" -replacement "<balise>nouvelle valeur</balise>"
