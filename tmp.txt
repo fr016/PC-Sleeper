@@ -1,1 +1,26 @@
+function Set-XmlPasswordsWithDependency {
+    param(
+        [string]$xmlFilePath
+    )
+
+    $xmlContent = Get-Content -Path $xmlFilePath -Raw
+
+    # Recherche et extraction de toutes les occurrences de la balise <password>
+    $matches = [regex]::Matches($xmlContent, "(?<=<password>)[^<]+")
+
+    # Parcours de toutes les occurrences et remplacement des valeurs
+    foreach ($match in $matches) {
+        $oldPassword = $match.Value
+        $newPassword = "nouveau_" + $oldPassword
+        $xmlContent = $xmlContent -replace "<password>$oldPassword</password>", "<password>$newPassword</password>"
+    }
+
+    # Encode les caractères spéciaux au format XML
+    $xmlContent = [System.Web.HttpUtility]::HtmlEncode($xmlContent)
+
+    $xmlContent | Out-File -FilePath $xmlFilePath -Force
+}
+
+# Utilisation de la fonction pour écraser toutes les balises <password> avec les nouvelles valeurs dépendantes de leurs anciennes valeurs
+Set-XmlPasswordsWithDependency -xmlFilePath "chemin/vers/votre/fichier.xml"
 
