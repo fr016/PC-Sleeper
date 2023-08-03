@@ -1,1 +1,26 @@
 
+Objet : Accès et documentation pour contribution au projet 
+
+bonjour
+
+Suite à notre réunion concernant le projet , je comprends l'importance des accès et de la documentation nécessaires pour que vous puissiez contribuer efficacement au développement. Cependant, nous faisons face à quelques défis liés aux congés de certaines personnes responsables des approbations.
+
+Voici l'état actuel concernant les accès et les solutions envisagées :
+
+1. Accès API et E:
+Pour obtenir les accès API et F, il est essentiel d'attendre le retour de X responsables de ces autorisations. Dès leur retour, nous nous efforcerons de traiter rapidement vos demandes pour vous permettre de démarrer vos travaux.
+
+2. Accès t0 via Z:
+Pour cette partie, deux solutions sont possibles :
+
+   a) Si Y ne dispose pas encore d'accès pour tester son code sur l'environnement Z elle pourra le faire avec son collègue T qui a les acces
+
+   b) Y peut également opter pour une demande d'habilitation t0 via Zavec un poste SGADM auprès de sa supérieure, I. 
+
+Par ailleurs, pour la solution F, nous prévoyons de finaliser le passage en mode CLI (Command Line Interface) d'ici la mi-septembre. Ce changement facilitera la gestion et l'automatisation des habilitations, simplifiant ainsi le processus pour les futurs collaborateurs. En attendant, tout utilisation de Een CLI est suspendu
+Je vous encourage à explorer la documentation disponible sur le projet GHC pendant cette période de congés afin de vous préparer pour votre contribution future. Si vous avez des questions ou des besoins supplémentaires, n'hésitez pas à nous en faire part. Nous sommes disponibles pour vous aider dans votre démarche.
+
+Profitez pleinement de vos vacances et nous serons prêts à travailler avec vous à notre retour.
+
+Cordialement,
+
