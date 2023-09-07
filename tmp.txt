@@ -23,3 +23,28 @@ function Test-ServiceCertificate {
 
 # Exemple d'utilisation :
 # Test-ServiceCertificate -Thumbprint "YOUR_THUMBPRINT"
+
+
+function Test-ADServiceCertificate {
+    param (
+        [string]$Thumbprint
+    )
+
+    $cert = Get-ChildItem -Path Cert:\LocalMachine\My | Where-Object { $_.Thumbprint -eq $Thumbprint }
+
+    if ($cert -eq $null) {
+        Write-Host "Certificat introuvable avec la thumbprint $Thumbprint."
+    } else {
+        $oidList = $cert.Extensions | ForEach-Object { $_.Oid.Value }
+        
+        # Vérifie si l'OID pour AD DS est présent dans les extensions
+        if ($oidList -contains "1.3.6.1.4.1.311.21.8.2814090.6998091.13792092.14684489.17986494.13546196") {
+            Write-Host "Le certificat avec la thumbprint $Thumbprint est associé à un service AD DS."
+        } else {
+            Write-Host "Le certificat avec la thumbprint $Thumbprint n'est pas associé à un service AD DS."
+        }
+    }
+}
+
+# Exemple d'utilisation :
+# Test-ADServiceCertificate -Thumbprint "YOUR_THUMBPRINT"
