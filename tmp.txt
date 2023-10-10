@@ -1,11 +1,1 @@
 
-# Remplacez 'mon-bucket' par le nom de votre bucket
-$bucketName = "mon-bucket"
-
-# Liste toutes les versions des objets dans le bucket
-$versions = Get-S3Version -BucketName $bucketName
-
-# Supprime toutes les versions des objets
-$versions | ForEach-Object {
-    Remove-S3Version -BucketName $bucketName -Key $_.Key -VersionId $_.VersionId
-}
