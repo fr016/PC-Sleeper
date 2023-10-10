@@ -1,1 +1,32 @@
+# Chargez le certificat à partir d'un fichier ou d'un autre emplacement
+$cert = Get-Item -Path "Cert:\CurrentUser\My\<NomDuCertificat>"
+
+# Parcourez les extensions du certificat pour trouver le SAN
+foreach ($extension in $cert.Extensions) {
+    if ($extension.Oid.FriendlyName -eq "Subject Alternative Name") {
+        # Le SAN se trouve dans cette extension
+        $san = [System.Security.Cryptography.X509Certificates.X509Extension]::Format($false, $extension.RawData)
+        Write-Host "Subject Alternative Name (SAN) : $san"
+        break
+    }
+}
+
+
+ou
+
+# Chargez le certificat à partir du contenu binaire (blob)
+$blob = [System.IO.File]::ReadAllBytes("<CheminVersLeFichierDuCertificat>")
+$cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2
+$cert.Import($blob)
+
+# Parcourez les extensions du certificat pour trouver le SAN
+foreach ($extension in $cert.Extensions) {
+    if ($extension.Oid.FriendlyName -eq "Subject Alternative Name") {
+        # Le SAN se trouve dans cette extension
+        $san = [System.Security.Cryptography.X509Certificates.X509Extension]::Format($false, $extension.RawData)
+        Write-Host "Subject Alternative Name (SAN) : $san"
+        break
+    }
+}
+
 
