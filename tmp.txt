@@ -1,1 +1,105 @@
 
+function Get-SubnetSiteFromDCFQDN {
+    param(
+        [string]$DCFQDN
+    )
+
+    $SiteName = (Get-ADDomainController -Identity $DCFQDN).Site.Name
+    $SubnetSite = Get-ADReplicationSubnet -filter {Site -eq $SiteName}
+
+    return $SubnetSite
+}
+
+$DCSubnetSite = Get-SubnetSiteFromDCFQDN -DCFQDN "nom_du_DC.domaine.com"
+if ($DCSubnetSite) {
+    Write-Host "Le sous-réseau de réplication associé au DC est : $($DCSubnetSite.Name)"
+} else {
+    Write-Host "Aucun sous-réseau de réplication trouvé pour le DC spécifié."
+}
+
+
+-------------------------
+
+function Get-ReplicationSummary {
+    param(
+        [string]$Domain,
+        [string]$DCFQDN
+    )
+
+    try {
+        $replicationSummary = Invoke-Command -ComputerName $DCFQDN -ScriptBlock { repadmin /replsummary } -ErrorAction Stop
+        return $replicationSummary
+    }
+    catch {
+        return $null
+    }
+}
+
+function Analyze-ReplicationSummary {
+    param(
+        [string]$ReplicationSummary
+    )
+
+    # Analyse la sortie de la commande repadmin /replsummary
+    # Ici, vous pouvez ajouter la logique pour détecter les problèmes de réplication
+
+    # Par exemple, pour cet exemple, on cherche les occurrences de "ERROR" dans la sortie
+    $errorCount = ($ReplicationSummary | Select-String -Pattern "ERROR").Count
+
+    if ($errorCount -gt 0) {
+        Write-Host "Problèmes de réplication détectés :"
+        $ReplicationSummary | Select-String -Pattern "ERROR"
+    } else {
+        Write-Host "Aucun problème de réplication détecté."
+    }
+}
+
+# Exemple d'utilisation
+$Domain = "votre_domaine.com"
+$DCFQDN = "nom_du_DC.votre_domaine.com"
+
+$replicationSummary = Get-ReplicationSummary -Domain $Domain -DCFQDN $DCFQDN
+
+if ($replicationSummary) {
+    Write-Host "Résumé de la réplication sur le DC $DCFQDN :"
+    Write-Host $replicationSummary
+
+    # Analyser la sortie pour détecter les problèmes de réplication
+    Analyze-ReplicationSummary -ReplicationSummary $replicationSummary
+} else {
+    Write-Host "Impossible d'exécuter la commande repadmin /replsummary sur le DC $DCFQDN."
+}
+
+
+----------------------
+
+function Analyze-ReplicationSummary {
+    param(
+        [string]$DCName
+    )
+
+    # Récupère les métadonnées de réplication pour le DC spécifié
+    $replicationMetadata = Get-ADReplicationPartnerMetadata -Target $DCName
+
+    # Analyse les métadonnées de réplication pour détecter les problèmes
+    $replicationIssues = @()
+
+    foreach ($metadata in $replicationMetadata) {
+        if ($metadata.LastReplicationResult -ne "0") {
+            $replicationIssues += $metadata
+        }
+    }
+
+    return $replicationIssues
+}
+
+# Exemple d'utilisation
+$DCName = "nom_du_DC"
+$replicationIssues = Analyze-ReplicationSummary -DCName $DCName
+
+if ($replicationIssues.Count -gt 0) {
+    Write-Host "Problèmes de réplication détectés sur $DCName :"
+    $replicationIssues | Format-Table -AutoSize
+} else {
+    Write-Host "Aucun problème de réplication détecté sur $DCName."
+}
