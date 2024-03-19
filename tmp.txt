@@ -1,1 +1,30 @@
+function FixPath([string]$path) {
+    try {
+        $pattern = "^[a-zA-Z]:\\[^\\""]+\\[^\\""]+$"
+        if ($path -match $pattern) {
+            return $path
+        } else {
+            $parentFolder = Split-Path $path -Parent
+            $subFolder = Split-Path $path -Leaf
+            $fixedPath = Join-Path $parentFolder $subFolder
+            return $fixedPath
+        }
+    }
+    catch {
+        Write-Output "An error occurred: $_"
+    }
+}
+
+# Example usage
+$path1 = "C:\folder\subfolder"
+$path2 = "C:\folder"
+$path3 = "C:\folder\subfolder\anotherSubfolder"
+
+$fixedPath1 = FixPath $path1
+$fixedPath2 = FixPath $path2
+$fixedPath3 = FixPath $path3
+
+Write-Output "Fixed Path 1: $fixedPath1"
+Write-Output "Fixed Path 2: $fixedPath2"
+Write-Output "Fixed Path 3: $fixedPath3"
 
