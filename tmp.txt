@@ -1,1 +1,73 @@
+Voici une fonction PowerShell qui crée un certificat auto-signé avec une clé privée. Ce certificat pourra ensuite être utilisé pour tester les fonctions que j'ai fournies. Nous utiliserons la cmdlet native PowerShell `New-SelfSignedCertificate` pour créer ce certificat. Ce certificat sera stocké dans le magasin local des certificats, avec une clé privée associée (qui peut être exportable ou non selon les options que tu choisis).
 
+### Fonction pour créer un certificat auto-signé avec une clé privée
+
+```powershell
+function Create-SelfSignedCertWithPrivateKey {
+    param(
+        [string]$CertName = "TestCert",
+        [string]$StoreLocation = "Cert:\LocalMachine\My",
+        [bool]$ExportablePrivateKey = $true,
+        [int]$KeySize = 2048
+    )
+
+    # Créer un certificat auto-signé avec clé privée exportable ou non
+    $keyExportPolicy = if ($ExportablePrivateKey) {
+        "Exportable"
+    } else {
+        "NonExportable"
+    }
+
+    $cert = New-SelfSignedCertificate `
+        -DnsName $CertName `
+        -CertStoreLocation $StoreLocation `
+        -KeySpec KeyExchange `
+        -KeyExportPolicy $keyExportPolicy `
+        -KeyLength $KeySize `
+        -HashAlgorithm "SHA256" `
+        -NotAfter (Get-Date).AddYears(1) `
+        -FriendlyName "Certificat de test avec clé privée $CertName"
+
+    if ($cert -ne $null) {
+        Write-Host "Certificat créé avec succès : $($cert.Thumbprint)"
+    } else {
+        Write-Host "Échec de la création du certificat."
+    }
+
+    return $cert
+}
+```
+
+### Explication des paramètres :
+- **$CertName** : Le nom DNS (ou sujet) du certificat.
+- **$StoreLocation** : Le magasin de certificats où le certificat sera stocké. Par défaut, il est placé dans `LocalMachine\My`, mais cela peut être changé.
+- **$ExportablePrivateKey** : Si cette valeur est définie sur `$true`, la clé privée sera exportable. Si `$false`, la clé privée ne sera pas exportable.
+- **$KeySize** : La taille de la clé RSA, généralement 2048 ou 4096 bits pour la sécurité.
+
+### Utilisation :
+Pour créer un certificat avec une clé privée **exportable**, tu peux appeler la fonction comme ceci :
+
+```powershell
+$cert = Create-SelfSignedCertWithPrivateKey -CertName "TestExportableCert" -ExportablePrivateKey $true
+```
+
+Pour un certificat avec une clé privée **non exportable**, utilise :
+
+```powershell
+$cert = Create-SelfSignedCertWithPrivateKey -CertName "TestNonExportableCert" -ExportablePrivateKey $false
+```
+
+### Résultat :
+- La fonction renvoie l'objet certificat créé, que tu peux utiliser directement pour tester les fonctions que j'ai fournies précédemment.
+- Le certificat sera disponible dans le magasin de certificats `Cert:\LocalMachine\My`, et tu pourras utiliser son empreinte (Thumbprint) pour le tester avec les différentes fonctions que nous avons créées.
+
+### Exemple d'utilisation des tests :
+Une fois le certificat créé, tu peux utiliser son empreinte numérique pour tester s'il est exportable avec la fonction `Test-KeyExportabilityWorkflow` :
+
+```powershell
+$thumbprint = $cert.Thumbprint
+$result = Test-KeyExportabilityWorkflow -Thumbprint $thumbprint
+Write-Host "Exportabilité de la clé privée : $result"
+```
+
+Cela te permettra de vérifier si tes fonctions fonctionnent comme prévu sur des certificats créés avec ou sans clé privée exportable.
