@@ -1,40 +1,50 @@
 <#
 .SYNOPSIS
-    Analyse la taille des tokens des utilisateurs Active Directory et génère un rapport CSV.
+    Analyzes the token size of Active Directory users and generates an interactive HTML report.
 .DESCRIPTION
-    Ce script scanne les utilisateurs activés dans le domaine Active Directory et estime leur taille de token.
-    Il génère **un seul fichier CSV** avec le **TOP des utilisateurs** ayant les plus grands tokens, incluant :
-    - Le nom du domaine
-    - Le nombre de groupes auxquels appartient l'utilisateur
+    This script scans active users in Active Directory and estimates their token size.
+    It generates an interactive HTML report displaying:
+    - The domain name
+    - The number of groups the user belongs to
+    - An alert if the token exceeds the threshold
+    - A message if no issues are detected
+    - **Mock mode (`-Mock`)** with problematic accounts
+    - **If `_fr` is in the username, the report opens automatically**
+    - **In mock mode, the report also opens automatically**
 
 .PARAMETER AccountName
-    (Optionnel) Nom d'un utilisateur spécifique à analyser.
+    (Optional) Name of a specific user to analyze.
 
 .PARAMETER TrustedDomain
-    (Optionnel) Nom du domaine de confiance à interroger.
+    (Optional) Name of the trusted domain to query.
+
+.PARAMETER Mock
+    (Optional) Enables test mode with problematic data.
 
 .EXAMPLE
     Get-TokenSizeReport.ps1
-    🔍 Analyse tous les utilisateurs activés du domaine actuel.
-
-.EXAMPLE
-    Get-TokenSizeReport.ps1 -AccountName "jdoe"
-    🔍 Analyse uniquement l'utilisateur "jdoe".
+    Scans all active users in the current domain and generates an HTML report.
 
 .EXAMPLE
     Get-TokenSizeReport.ps1 -TrustedDomain "corp.acme.com"
-    🔍 Analyse tous les utilisateurs du domaine distant "corp.acme.com".
+    Scans all users in the remote domain "corp.acme.com" and generates an HTML report.
+
+.EXAMPLE
+    Get-TokenSizeReport.ps1 -Mock
+    Generates a report with mock data including problematic accounts.
 #>
 
 param(
     [string]$AccountName,
-    [string]$TrustedDomain
+    [string]$TrustedDomain,
+    [switch]$Mock
 )
 
-# Seuil critique pour le TokenSize
+# Critical token size threshold
 $Threshold = 8192
+$CurrentUser = $env:USERNAME
 
-# Configuration des logs
+# Logging configuration
 function Write-Log {
     [CmdletBinding()]
     param(
@@ -47,157 +57,130 @@ function Write-Log {
 
 <#
 .SYNOPSIS
-    Vérifie l'environnement avant exécution.
-.DESCRIPTION
-    Vérifie la présence du module Active Directory et des permissions suffisantes.
-.EXAMPLE
-    Check-Environment
+    Verifies the environment before execution.
 #>
 function Check-Environment {
-    Write-Log -Message "Verification de l'environnement d'execution..." -LogLevel "INFO"
+    if ($Mock) { return }  # No need to check AD in mock mode
 
+    Write-Log -Message "Checking execution environment..." -LogLevel "INFO"
     if (-not (Get-Command "Get-ADUser" -ErrorAction SilentlyContinue)) {
-        Write-Log -Message "Le module Active Directory est requis !" -LogLevel "ERROR"
-        throw "Module AD requis"
-    }
-
-    if (-not (whoami /groups | Select-String "Domain Admins")) {
-        Write-Log -Message "Attention : Ce script doit etre execute avec des permissions administrateur !" -LogLevel "WARN"
+        Write-Log -Message "Active Directory module is required!" -LogLevel "ERROR"
+        throw "Active Directory module required"
     }
 }
 
 <#
 .SYNOPSIS
-    Recupere les utilisateurs Active Directory.
-.DESCRIPTION
-    Recherche tous les utilisateurs actives ou un utilisateur specifique.
-.PARAMETER AccountName
-    (Optionnel) Nom du compte utilisateur a rechercher.
-.PARAMETER TrustedDomain
-    (Optionnel) Nom du domaine Active Directory distant.
-.EXAMPLE
-    Get-ADUsers
-    🔍 Recupere tous les utilisateurs actives du domaine actuel.
+    Retrieves active Active Directory users.
 #>
 function Get-ADUsers {
-    [CmdletBinding()]
-    param(
-        [string]$AccountName,
-        [string]$TrustedDomain
-    )
-
-    Write-Log -Message "Recuperation des utilisateurs AD..." -LogLevel "INFO"
-    $filter = "(&(objectClass=user)(objectcategory=person)(!userAccountControl:1.2.840.113556.1.4.803:=2))"
-
-    if ($AccountName) {
-        $filter = "(&(objectClass=user)(objectcategory=person)(samaccountname=$AccountName))"
+    if ($Mock) {
+        Write-Log -Message "Mock mode: Generating sample problematic data..." -LogLevel "INFO"
+        return @(
+            [PSCustomObject]@{ SamAccountName="jdoe"; Domain="corp.local"; MemberOf=250; SIDHistory=10 }
+            [PSCustomObject]@{ SamAccountName="alice"; Domain="corp.local"; MemberOf=300; SIDHistory=20 }
+            [PSCustomObject]@{ SamAccountName="bob"; Domain="corp.acme.com"; MemberOf=50; SIDHistory=5 }
+            [PSCustomObject]@{ SamAccountName="charlie"; Domain="corp.acme.com"; MemberOf=20; SIDHistory=2 }
+        )
     }
 
-    $searchBase = if ($TrustedDomain) { "LDAP://$TrustedDomain" } else { "LDAP://" + ([ADSI] "LDAP://RootDSE").defaultNamingContext }
-    $searcher = New-Object DirectoryServices.DirectorySearcher
-    $searcher.SearchRoot = New-Object DirectoryServices.DirectoryEntry($searchBase)
-    $searcher.Filter = $filter
-    $searcher.PageSize = 1000
-    $searcher.PropertiesToLoad.AddRange(@("samaccountname", "memberof", "sidhistory", "distinguishedName"))
+    Write-Log -Message "Retrieving Active Directory users..." -LogLevel "INFO"
+    $Server = if ($TrustedDomain) { $TrustedDomain } else { $env:USERDNSDOMAIN }
+    $filter = { Enabled -eq $true }
+    if ($AccountName) { $filter = { SamAccountName -eq $AccountName } }
 
-    $users = $searcher.FindAll() | ForEach-Object {
-        # Extraire le nom du domaine
-        $dn = $_.Properties.distinguishedName[0]
-        $domain = ($dn -split ",DC=")[1..($dn -split ",DC=").Count] -join "."
-
-        [PSCustomObject]@{
-            SamAccountName = $_.Properties.samaccountname[0]
-            MemberOf       = $_.Properties.memberof
-            SIDHistory     = $_.Properties.sidhistory
-            Domain         = $domain
-        }
+    try {
+        $users = Get-ADUser -Filter $filter -Server $Server -Properties MemberOf, SIDHistory, DistinguishedName
+    }
+    catch {
+        Write-Log -Message "Error retrieving AD users: $_" -LogLevel "ERROR"
+        return @()
     }
 
-    Write-Log -Message "Nombre d'utilisateurs recuperes : $($users.Count)" -LogLevel "INFO"
-    return $users
+    return $users | ForEach-Object {
+        $dn = $_.DistinguishedName -split ",DC="
+        $domain = ($dn[1..$dn.Length] -join ".")
+        [PSCustomObject]@{ SamAccountName=$_.SamAccountName; Domain=$domain; MemberOf=$_.MemberOf.Count; SIDHistory=$_.SIDHistory.Count }
+    }
 }
 
 <#
 .SYNOPSIS
-    Calcule la taille estimee du token d'un utilisateur.
-.DESCRIPTION
-    Utilise le nombre de groupes et d'historiques SID pour estimer la taille du token.
-.PARAMETER User
-    Objet utilisateur contenant les groupes et SID history.
-.EXAMPLE
-    $tokenSize = Calculate-TokenSize -User $user
+    Calculates the estimated token size of a user.
 #>
 function Calculate-TokenSize {
-    [CmdletBinding()]
-    param(
-        [PSCustomObject]$User
-    )
-
-    Write-Log -Message "Calcul de la taille du token pour $($User.SamAccountName)..." -LogLevel "INFO"
-
-    $groupCount = @($User.MemberOf).Count + @($User.SIDHistory).Count
-    $TokenSize = 1200 + (40 * $groupCount)
-
-    return @{
-        TokenSize   = $TokenSize
-        MemberOfCount = $groupCount
-    }
+    param([PSCustomObject]$User)
+    $TokenSize = 1200 + (40 * ($User.MemberOf + $User.SIDHistory))
+    return @{ TokenSize=$TokenSize; MemberOfCount=($User.MemberOf + $User.SIDHistory) }
 }
 
 <#
 .SYNOPSIS
-    Genere un rapport CSV sur la taille des tokens utilisateurs.
-.DESCRIPTION
-    Genere un rapport listant **uniquement les utilisateurs ayant les plus grands tokens**.
-.PARAMETER Users
-    Liste des utilisateurs avec leurs tailles de tokens.
-.PARAMETER TopUsers
-    (Optionnel) Nombre d'utilisateurs avec les plus grands tokens a inclure (Defaut : 200).
-.EXAMPLE
-    Generate-TokenReport -Users $usersWithToken
+    Generates an interactive HTML report.
 #>
-function Generate-TokenReport {
-    [CmdletBinding()]
-    param(
-        [array]$Users,
-        [int]$TopUsers = 200
-    )
+function Generate-HTMLReport {
+    param([array]$Users)
 
-    Write-Log -Message "Generation du rapport CSV..." -LogLevel "INFO"
-
-    # Filtrer les utilisateurs depassant le seuil de 8192 bytes
-    $reportTop = $Users | Where-Object { $_.TokenSize -ge $Threshold } | Sort-Object TokenSize -Descending | Select-Object -First $TopUsers
-
-    # Fichier de sortie unique
+    Write-Log -Message "Generating HTML report..." -LogLevel "INFO"
     $date = Get-Date -Format "yyyyMMdd_HHmmss"
-    $fileTop = "TokenSizeTopReport_$date.csv"
+    $fileHTML = "TokenSizeReport_$date.html"
 
-    # Export CSV
-    $reportTop | Export-Csv -Path $fileTop -NoTypeInformation -Delimiter ";"
+    $htmlHeader = @"
+    <html>
+    <head>
+        <title>Token Size AD Report</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+            th, td { padding: 10px; border: 1px solid black; text-align: left; }
+            th { background-color: #f2f2f2; }
+            .alert { color: red; font-weight: bold; }
+        </style>
+    </head>
+    <body>
+        <h2>Token Size AD Report</h2>
+        <p>Threshold used: <b>$Threshold bytes</b></p>
+"@
 
-    Write-Log -Message "Rapport genere : $fileTop" -LogLevel "INFO"
+    $htmlFooter = "</body></html>"
+
+    $reportTop = $Users | Where-Object { $_.TokenSize -ge $Threshold } | Sort-Object TokenSize -Descending
+
+    if ($reportTop.Count -eq 0) {
+        $htmlBody = "<p>No issues detected. All users have a token size below $Threshold bytes.</p>"
+    } else {
+        $htmlBody = "<table><tr><th>Username</th><th>Domain</th><th>Token Size</th><th>Group Count</th></tr>"
+        foreach ($user in $reportTop) {
+            $htmlBody += "<tr><td>$($user.SamAccountName)</td><td>$($user.Domain)</td><td class='alert'>$($user.TokenSize)</td><td>$($user.MemberOfCount)</td></tr>"
+        }
+        $htmlBody += "</table>"
+    }
+
+    $htmlContent = $htmlHeader + $htmlBody + $htmlFooter
+    $htmlContent | Out-File -Encoding UTF8 -FilePath $fileHTML
+    Write-Log -Message "Report generated: $fileHTML" -LogLevel "INFO"
+
+    # Open the report if the user contains "_fr" or if mock mode is enabled
+    if ($Mock -or $CurrentUser -match "_fr") {
+        Write-Log -Message "Automatically opening the HTML report..." -LogLevel "INFO"
+        Start-Process $fileHTML
+    }
 }
 
-# Execution principale du script
+# Main execution
 try {
     Check-Environment
-
-    $users = Get-ADUsers -AccountName $AccountName -TrustedDomain $TrustedDomain
+    $users = Get-ADUsers
     $usersWithToken = @()
 
     foreach ($user in $users) {
         $tokenData = Calculate-TokenSize -User $user
-        $usersWithToken += [PSCustomObject]@{
-            SamAccountName = $user.SamAccountName
-            Domain         = $user.Domain
-            TokenSize      = $tokenData.TokenSize
-            MemberOfCount  = $tokenData.MemberOfCount
-        }
+        $usersWithToken += [PSCustomObject]@{ SamAccountName=$user.SamAccountName; Domain=$user.Domain; TokenSize=$tokenData.TokenSize; MemberOfCount=$tokenData.MemberOfCount }
     }
 
-    Generate-TokenReport -Users $usersWithToken
-    Write-Log -Message "Script termine avec succes." -LogLevel "INFO"
+    Generate-HTMLReport -Users $usersWithToken
+    Write-Log -Message "Script completed successfully." -LogLevel "INFO"
 }
 catch {
-    Write-Log -Message "Erreur : $_" -LogLevel "ERROR"
+    Write-Log -Message "Error: $_" -LogLevel "ERROR"
 }
