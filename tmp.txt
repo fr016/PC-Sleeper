@@ -3,48 +3,38 @@
     Analyse la taille des tokens des utilisateurs Active Directory et génère un rapport CSV.
 .DESCRIPTION
     Ce script scanne les utilisateurs activés dans le domaine Active Directory et estime leur taille de token.
-    Il génère deux rapports CSV :
-    1) Liste des utilisateurs dont la taille du token dépasse un seuil défini.
-    2) Liste des X utilisateurs ayant les plus grands tokens.
+    Il génère **un seul fichier CSV** avec le **TOP des utilisateurs** ayant les plus grands tokens, incluant :
+    - Le nom du domaine
+    - Le nombre de groupes auxquels appartient l'utilisateur
 
 .PARAMETER AccountName
     (Optionnel) Nom d'un utilisateur spécifique à analyser.
 
 .PARAMETER TrustedDomain
-    (Optionnel) Nom du domaine de confiance pour exécuter le script à distance.
-
-.PARAMETER InputFile
-    (Optionnel) Fichier contenant une liste de comptes utilisateurs à analyser.
+    (Optionnel) Nom du domaine de confiance à interroger.
 
 .EXAMPLE
     Get-TokenSizeReport.ps1
-    Analyse tous les utilisateurs activés du domaine actuel.
+    🔍 Analyse tous les utilisateurs activés du domaine actuel.
 
 .EXAMPLE
     Get-TokenSizeReport.ps1 -AccountName "jdoe"
-    Analyse uniquement l'utilisateur "jdoe".
+    🔍 Analyse uniquement l'utilisateur "jdoe".
 
+.EXAMPLE
+    Get-TokenSizeReport.ps1 -TrustedDomain "corp.acme.com"
+    🔍 Analyse tous les utilisateurs du domaine distant "corp.acme.com".
 #>
 
 param(
     [string]$AccountName,
-    [string]$TrustedDomain,
-    [string]$InputFile
+    [string]$TrustedDomain
 )
 
+# Seuil critique pour le TokenSize
+$Threshold = 8192
+
 # Configuration des logs
-<#
-.SYNOPSIS
-    Écrit un message dans les logs.
-.DESCRIPTION
-    Centralise l'écriture des logs pour assurer une traçabilité complète du script.
-.PARAMETER Message
-    Message à enregistrer.
-.PARAMETER LogLevel
-    Niveau de log (INFO, WARN, ERROR).
-.EXAMPLE
-    Write-Log -Message "Début du script" -LogLevel "INFO"
-#>
 function Write-Log {
     [CmdletBinding()]
     param(
@@ -57,14 +47,14 @@ function Write-Log {
 
 <#
 .SYNOPSIS
-    Vérifie que l'environnement est prêt pour exécuter le script.
+    Vérifie l'environnement avant exécution.
 .DESCRIPTION
     Vérifie la présence du module Active Directory et des permissions suffisantes.
 .EXAMPLE
     Check-Environment
 #>
 function Check-Environment {
-    Write-Log -Message "Vérification de l'environnement d'exécution..." -LogLevel "INFO"
+    Write-Log -Message "Verification de l'environnement d'execution..." -LogLevel "INFO"
 
     if (-not (Get-Command "Get-ADUser" -ErrorAction SilentlyContinue)) {
         Write-Log -Message "Le module Active Directory est requis !" -LogLevel "ERROR"
@@ -72,25 +62,22 @@ function Check-Environment {
     }
 
     if (-not (whoami /groups | Select-String "Domain Admins")) {
-        Write-Log -Message "Attention : Ce script doit être exécuté avec des permissions administrateur !" -LogLevel "WARN"
+        Write-Log -Message "Attention : Ce script doit etre execute avec des permissions administrateur !" -LogLevel "WARN"
     }
 }
 
 <#
 .SYNOPSIS
-    Récupère les utilisateurs Active Directory.
+    Recupere les utilisateurs Active Directory.
 .DESCRIPTION
-    Recherche tous les utilisateurs activés ou un utilisateur spécifique dans un domaine.
+    Recherche tous les utilisateurs actives ou un utilisateur specifique.
 .PARAMETER AccountName
-    (Optionnel) Nom du compte utilisateur à rechercher.
+    (Optionnel) Nom du compte utilisateur a rechercher.
 .PARAMETER TrustedDomain
     (Optionnel) Nom du domaine Active Directory distant.
 .EXAMPLE
     Get-ADUsers
-    Récupère tous les utilisateurs activés du domaine actuel.
-.EXAMPLE
-    Get-ADUsers -AccountName "jdoe"
-    Récupère les informations de l'utilisateur "jdoe".
+    🔍 Recupere tous les utilisateurs actives du domaine actuel.
 #>
 function Get-ADUsers {
     [CmdletBinding()]
@@ -99,7 +86,7 @@ function Get-ADUsers {
         [string]$TrustedDomain
     )
 
-    Write-Log -Message "Récupération des utilisateurs AD..." -LogLevel "INFO"
+    Write-Log -Message "Recuperation des utilisateurs AD..." -LogLevel "INFO"
     $filter = "(&(objectClass=user)(objectcategory=person)(!userAccountControl:1.2.840.113556.1.4.803:=2))"
 
     if ($AccountName) {
@@ -111,23 +98,28 @@ function Get-ADUsers {
     $searcher.SearchRoot = New-Object DirectoryServices.DirectoryEntry($searchBase)
     $searcher.Filter = $filter
     $searcher.PageSize = 1000
-    $searcher.PropertiesToLoad.AddRange(@("samaccountname", "memberof", "sidhistory"))
+    $searcher.PropertiesToLoad.AddRange(@("samaccountname", "memberof", "sidhistory", "distinguishedName"))
 
     $users = $searcher.FindAll() | ForEach-Object {
+        # Extraire le nom du domaine
+        $dn = $_.Properties.distinguishedName[0]
+        $domain = ($dn -split ",DC=")[1..($dn -split ",DC=").Count] -join "."
+
         [PSCustomObject]@{
             SamAccountName = $_.Properties.samaccountname[0]
             MemberOf       = $_.Properties.memberof
             SIDHistory     = $_.Properties.sidhistory
+            Domain         = $domain
         }
     }
 
-    Write-Log -Message "Nombre d'utilisateurs récupérés : $($users.Count)" -LogLevel "INFO"
+    Write-Log -Message "Nombre d'utilisateurs recuperes : $($users.Count)" -LogLevel "INFO"
     return $users
 }
 
 <#
 .SYNOPSIS
-    Calcule la taille estimée du token d'un utilisateur.
+    Calcule la taille estimee du token d'un utilisateur.
 .DESCRIPTION
     Utilise le nombre de groupes et d'historiques SID pour estimer la taille du token.
 .PARAMETER User
@@ -143,24 +135,24 @@ function Calculate-TokenSize {
 
     Write-Log -Message "Calcul de la taille du token pour $($User.SamAccountName)..." -LogLevel "INFO"
 
-    $groups = @($User.MemberOf) + @($User.SIDHistory)
-    $TokenSize = 1200 + (40 * $groups.Count)
+    $groupCount = @($User.MemberOf).Count + @($User.SIDHistory).Count
+    $TokenSize = 1200 + (40 * $groupCount)
 
-    return $TokenSize
+    return @{
+        TokenSize   = $TokenSize
+        MemberOfCount = $groupCount
+    }
 }
 
 <#
 .SYNOPSIS
-    Génère un rapport CSV sur la taille des tokens utilisateurs.
+    Genere un rapport CSV sur la taille des tokens utilisateurs.
 .DESCRIPTION
-    Génère un rapport listant les utilisateurs ayant un token supérieur au seuil défini.
-    Un second rapport liste les X plus grands tokens.
+    Genere un rapport listant **uniquement les utilisateurs ayant les plus grands tokens**.
 .PARAMETER Users
     Liste des utilisateurs avec leurs tailles de tokens.
-.PARAMETER Threshold
-    (Optionnel) Seuil en octets pour signaler un token trop grand (Défaut : 6000).
 .PARAMETER TopUsers
-    (Optionnel) Nombre d'utilisateurs avec les plus grands tokens à inclure (Défaut : 200).
+    (Optionnel) Nombre d'utilisateurs avec les plus grands tokens a inclure (Defaut : 200).
 .EXAMPLE
     Generate-TokenReport -Users $usersWithToken
 #>
@@ -168,27 +160,25 @@ function Generate-TokenReport {
     [CmdletBinding()]
     param(
         [array]$Users,
-        [int]$Threshold = 6000,
         [int]$TopUsers = 200
     )
 
-    Write-Log -Message "Génération des rapports CSV..." -LogLevel "INFO"
+    Write-Log -Message "Generation du rapport CSV..." -LogLevel "INFO"
 
-    $reportAll = $Users | Where-Object { $_.TokenSize -ge $Threshold }
-    $reportTop = $Users | Sort-Object TokenSize -Descending | Select-Object -First $TopUsers
+    # Filtrer les utilisateurs depassant le seuil de 8192 bytes
+    $reportTop = $Users | Where-Object { $_.TokenSize -ge $Threshold } | Sort-Object TokenSize -Descending | Select-Object -First $TopUsers
 
+    # Fichier de sortie unique
     $date = Get-Date -Format "yyyyMMdd_HHmmss"
-    $fileAll = "TokenSizeReport_$date.csv"
-    $fileTop = "TopUsersReport_$date.csv"
+    $fileTop = "TokenSizeTopReport_$date.csv"
 
-    $reportAll | Export-Csv -Path $fileAll -NoTypeInformation -Delimiter ";"
+    # Export CSV
     $reportTop | Export-Csv -Path $fileTop -NoTypeInformation -Delimiter ";"
 
-    Write-Log -Message "Rapport principal : $fileAll" -LogLevel "INFO"
-    Write-Log -Message "Top utilisateurs : $fileTop" -LogLevel "INFO"
+    Write-Log -Message "Rapport genere : $fileTop" -LogLevel "INFO"
 }
 
-# Exécution principale du script
+# Execution principale du script
 try {
     Check-Environment
 
@@ -196,15 +186,17 @@ try {
     $usersWithToken = @()
 
     foreach ($user in $users) {
-        $tokenSize = Calculate-TokenSize -User $user
+        $tokenData = Calculate-TokenSize -User $user
         $usersWithToken += [PSCustomObject]@{
             SamAccountName = $user.SamAccountName
-            TokenSize      = $tokenSize
+            Domain         = $user.Domain
+            TokenSize      = $tokenData.TokenSize
+            MemberOfCount  = $tokenData.MemberOfCount
         }
     }
 
     Generate-TokenReport -Users $usersWithToken
-    Write-Log -Message "Script terminé avec succès." -LogLevel "INFO"
+    Write-Log -Message "Script termine avec succes." -LogLevel "INFO"
 }
 catch {
     Write-Log -Message "Erreur : $_" -LogLevel "ERROR"
