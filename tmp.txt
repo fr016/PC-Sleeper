@@ -1,201 +1,211 @@
-
 <#
-  This script will enumerate all enabled user accounts in a Domain, calculate their estimated Token
-  Size and create two reports in CSV format:
-  1) A report of all users with an estimated token size greater than or equal to the number defined
-     by the $TokensSizeThreshold variable.
-  2) A report of the top x users as defined by the $TopUsers variable.
-
-  Syntax:
-
-  - To run the script against all enabled user accounts in the current domain:
-      Get-TokenSizeReport.ps1
-
-  - To run the script against all enabled user accounts of a trusted domain:
-      Get-TokenSizeReport.ps1 -TrustedDomain:mytrusteddomain.com
-
-  - To run the script against 1 user account:
-      Get-TokenSizeReport.ps1 -AccountName:<samaccountname>
-
-  - To run the script against 1 user account of a trusted domain:
-      Get-TokenSizeReport.ps1 -AccountName:<samaccountname> -TrustedDomain:mytrusteddomain.com
-
-  Script Name: Get-TokenSizeReport.ps1
-  Release 2.8
-  Written by Jeremy Saunders (jeremy@jhouseconsulting.com) 13/12/2013
-  Modified by Jeremy Saunders (jeremy@jhouseconsulting.com) 22/09/2017<#
 .SYNOPSIS
-    GÃ©nÃ¨re un rapport sur la taille estimÃ©e des jetons Kerberos des utilisateurs d'un domaine Active Directory.
-
+    Analyse la taille des tokens des utilisateurs Active Directory et génère un rapport CSV.
 .DESCRIPTION
-    Ce script Ã©numÃ¨re tous les comptes d'utilisateurs actifs dans un domaine, calcule la taille estimÃ©e de leur jeton Kerberos et crÃ©e deux rapports au format CSVÂ :
-    1. Un rapport de tous les utilisateurs avec une taille de jeton estimÃ©e supÃ©rieure ou Ã©gale Ã  une valeur dÃ©finie par la variable $TokensSizeThreshold.
-    2. Un rapport des x utilisateurs ayant les plus grandes tailles de jeton, dÃ©fini par la variable $TopUsers.
+    Ce script scanne les utilisateurs activés dans le domaine Active Directory et estime leur taille de token.
+    Il génère deux rapports CSV :
+    1) Liste des utilisateurs dont la taille du token dépasse un seuil défini.
+    2) Liste des X utilisateurs ayant les plus grands tokens.
 
 .PARAMETER AccountName
-    (Optionnel) Le nom du compte SAM d'un utilisateur spÃ©cifique Ã  analyser.
+    (Optionnel) Nom d'un utilisateur spécifique à analyser.
 
 .PARAMETER TrustedDomain
-    (Optionnel) Le domaine de confiance Ã  analyser.
+    (Optionnel) Nom du domaine de confiance pour exécuter le script à distance.
 
-.PARAMETER OutputDirectory
-    (Optionnel) Le rÃ©pertoire oÃ¹ les rapports CSV seront enregistrÃ©s. Par dÃ©faut, le rÃ©pertoire courant.
-
-.EXAMPLE
-    .\Get-TokenSizeReport.ps1
-    ExÃ©cute le script pour tous les comptes d'utilisateurs actifs dans le domaine actuel.
+.PARAMETER InputFile
+    (Optionnel) Fichier contenant une liste de comptes utilisateurs à analyser.
 
 .EXAMPLE
-    .\Get-TokenSizeReport.ps1 -AccountName "jdoe"
-    ExÃ©cute le script pour l'utilisateur spÃ©cifiÃ©.
+    Get-TokenSizeReport.ps1
+    Analyse tous les utilisateurs activés du domaine actuel.
 
 .EXAMPLE
-    .\Get-TokenSizeReport.ps1 -TrustedDomain "trusted.domain.com"
-    ExÃ©cute le script pour tous les comptes d'utilisateurs actifs dans le domaine de confiance spÃ©cifiÃ©.
+    Get-TokenSizeReport.ps1 -AccountName "jdoe"
+    Analyse uniquement l'utilisateur "jdoe".
 
-.NOTES
-    AuteurÂ : [Votre Nom]
-    DateÂ : [Date]
-    VersionÂ : 1.0
 #>
 
-param (
-    [Parameter(Mandatory = $false)]
+param(
     [string]$AccountName,
-
-    [Parameter(Mandatory = $false)]
     [string]$TrustedDomain,
-
-    [Parameter(Mandatory = $false)]
-    [string]$OutputDirectory = (Get-Location).Path
+    [string]$InputFile
 )
 
-# Variables configurables
-$TokensSizeThreshold = 6000
-$TopUsers = 200
-$ProgressBar = $true
-$ConsoleOutput = $true
-$OutputSummary = $true
-$UseTokenGroups = $true
-$UseGetAuthorizationGroups = $false
+# Configuration des logs
+<#
+.SYNOPSIS
+    Écrit un message dans les logs.
+.DESCRIPTION
+    Centralise l'écriture des logs pour assurer une traçabilité complète du script.
+.PARAMETER Message
+    Message à enregistrer.
+.PARAMETER LogLevel
+    Niveau de log (INFO, WARN, ERROR).
+.EXAMPLE
+    Write-Log -Message "Début du script" -LogLevel "INFO"
+#>
+function Write-Log {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)][string]$Message,
+        [ValidateSet("INFO", "WARN", "ERROR")][string]$LogLevel = "INFO"
+    )
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    Write-Host "[$timestamp] [$LogLevel] $Message"
+}
 
-# Fonction pour obtenir le contexte de domaine
-function Get-DomainContext {
-    param (
+<#
+.SYNOPSIS
+    Vérifie que l'environnement est prêt pour exécuter le script.
+.DESCRIPTION
+    Vérifie la présence du module Active Directory et des permissions suffisantes.
+.EXAMPLE
+    Check-Environment
+#>
+function Check-Environment {
+    Write-Log -Message "Vérification de l'environnement d'exécution..." -LogLevel "INFO"
+
+    if (-not (Get-Command "Get-ADUser" -ErrorAction SilentlyContinue)) {
+        Write-Log -Message "Le module Active Directory est requis !" -LogLevel "ERROR"
+        throw "Module AD requis"
+    }
+
+    if (-not (whoami /groups | Select-String "Domain Admins")) {
+        Write-Log -Message "Attention : Ce script doit être exécuté avec des permissions administrateur !" -LogLevel "WARN"
+    }
+}
+
+<#
+.SYNOPSIS
+    Récupère les utilisateurs Active Directory.
+.DESCRIPTION
+    Recherche tous les utilisateurs activés ou un utilisateur spécifique dans un domaine.
+.PARAMETER AccountName
+    (Optionnel) Nom du compte utilisateur à rechercher.
+.PARAMETER TrustedDomain
+    (Optionnel) Nom du domaine Active Directory distant.
+.EXAMPLE
+    Get-ADUsers
+    Récupère tous les utilisateurs activés du domaine actuel.
+.EXAMPLE
+    Get-ADUsers -AccountName "jdoe"
+    Récupère les informations de l'utilisateur "jdoe".
+#>
+function Get-ADUsers {
+    [CmdletBinding()]
+    param(
+        [string]$AccountName,
         [string]$TrustedDomain
     )
-    if ($TrustedDomain) {
-        try {
-            $context = New-Object System.DirectoryServices.ActiveDirectory.DirectoryContext("Domain", $TrustedDomain)
-            $domain = [System.DirectoryServices.ActiveDirectory.Domain]::GetDomain($context)
-            return $domain
-        } catch {
-            Write-Error "Impossible de se connecter au domaine de confiance spÃ©cifiÃ©."
-            exit
-        }
-    } else {
-        return [System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain()
-    }
-}
 
-# Fonction pour rÃ©cupÃ©rer les utilisateurs du domaine
-function Get-DomainUsers {
-    param (
-        [System.DirectoryServices.ActiveDirectory.Domain]$Domain,
-        [string]$AccountName
-    )
-    $searcher = New-Object System.DirectoryServices.DirectorySearcher
-    $searcher.SearchRoot = $Domain.GetDirectoryEntry()
-    $searcher.Filter = if ($AccountName) {
-        "(&(objectCategory=person)(objectClass=user)(sAMAccountName=$AccountName))"
-    } else {
-        "(&(objectCategory=person)(objectClass=user)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))"
+    Write-Log -Message "Récupération des utilisateurs AD..." -LogLevel "INFO"
+    $filter = "(&(objectClass=user)(objectcategory=person)(!userAccountControl:1.2.840.113556.1.4.803:=2))"
+
+    if ($AccountName) {
+        $filter = "(&(objectClass=user)(objectcategory=person)(samaccountname=$AccountName))"
     }
+
+    $searchBase = if ($TrustedDomain) { "LDAP://$TrustedDomain" } else { "LDAP://" + ([ADSI] "LDAP://RootDSE").defaultNamingContext }
+    $searcher = New-Object DirectoryServices.DirectorySearcher
+    $searcher.SearchRoot = New-Object DirectoryServices.DirectoryEntry($searchBase)
+    $searcher.Filter = $filter
     $searcher.PageSize = 1000
-    $searcher.PropertiesToLoad.AddRange(@("sAMAccountName", "memberOf", "tokenGroups", "sIDHistory"))
-    return $searcher.FindAll()
+    $searcher.PropertiesToLoad.AddRange(@("samaccountname", "memberof", "sidhistory"))
+
+    $users = $searcher.FindAll() | ForEach-Object {
+        [PSCustomObject]@{
+            SamAccountName = $_.Properties.samaccountname[0]
+            MemberOf       = $_.Properties.memberof
+            SIDHistory     = $_.Properties.sidhistory
+        }
+    }
+
+    Write-Log -Message "Nombre d'utilisateurs récupérés : $($users.Count)" -LogLevel "INFO"
+    return $users
 }
 
-# Fonction pour calculer la taille estimÃ©e du jeton
+<#
+.SYNOPSIS
+    Calcule la taille estimée du token d'un utilisateur.
+.DESCRIPTION
+    Utilise le nombre de groupes et d'historiques SID pour estimer la taille du token.
+.PARAMETER User
+    Objet utilisateur contenant les groupes et SID history.
+.EXAMPLE
+    $tokenSize = Calculate-TokenSize -User $user
+#>
 function Calculate-TokenSize {
-    param (
-        [System.DirectoryServices.DirectoryEntry]$User
+    [CmdletBinding()]
+    param(
+        [PSCustomObject]$User
     )
-    $d = 0
-    $s = 0
 
-    if ($UseTokenGroups) {
-        $tokenGroups = $User.Invoke("tokenGroups")
-        foreach ($group in $tokenGroups) {
-            $sid = New-Object System.Security.Principal.SecurityIdentifier($group, 0)
-            switch ($sid.AccountDomainSid.Value) {
-                ($User.Properties["objectSid"][0].AccountDomainSid.Value) { $s++ }
-                default { $d++ }
-            }
-        }
-    }
+    Write-Log -Message "Calcul de la taille du token pour $($User.SamAccountName)..." -LogLevel "INFO"
 
-    if ($UseGetAuthorizationGroups) {
-        try {
-            $groups = $User.Groups
-            foreach ($group in $groups) {
-                switch ($group.GroupScope) {
-                    "Universal" {
-                        if ($group.Parent.Name -eq $User.Parent.Name) { $s++ } else { $d++ }
-                    }
-                    "Global" { $s++ }
-                    "DomainLocal" { $d++ }
-                }
-            }
-        } catch {
-            Write-Warning "Erreur lors de la rÃ©cupÃ©ration des groupes pour l'utilisateur $($User.Properties["sAMAccountName"][0])."
-        }
-    }
+    $groups = @($User.MemberOf) + @($User.SIDHistory)
+    $TokenSize = 1200 + (40 * $groups.Count)
 
-    $sidHistoryCount = $User.Properties["sIDHistory"].Count
-    $d += $sidHistoryCount
-
-    $tokenSize = 1200 + (40 * $d) + (8 * $s)
-    return $tokenSize
+    return $TokenSize
 }
 
-# Fonction pour exporter les rapports CSV
-function Export-Reports {
-    param (
-        [System.Collections.ArrayList]$UserTokenSizes,
-        [string]$OutputDirectory
+<#
+.SYNOPSIS
+    Génère un rapport CSV sur la taille des tokens utilisateurs.
+.DESCRIPTION
+    Génère un rapport listant les utilisateurs ayant un token supérieur au seuil défini.
+    Un second rapport liste les X plus grands tokens.
+.PARAMETER Users
+    Liste des utilisateurs avec leurs tailles de tokens.
+.PARAMETER Threshold
+    (Optionnel) Seuil en octets pour signaler un token trop grand (Défaut : 6000).
+.PARAMETER TopUsers
+    (Optionnel) Nombre d'utilisateurs avec les plus grands tokens à inclure (Défaut : 200).
+.EXAMPLE
+    Generate-TokenReport -Users $usersWithToken
+#>
+function Generate-TokenReport {
+    [CmdletBinding()]
+    param(
+        [array]$Users,
+        [int]$Threshold = 6000,
+        [int]$TopUsers = 200
     )
-    $thresholdReport = $UserTokenSizes | Where-Object { $_.TokenSize -ge $TokensSizeThreshold }
-    $topUsersReport = $UserTokenSizes | Sort-Object TokenSize -Descending | Select-Object -First $TopUsers
 
-    $thresholdReport | Export-Csv -Path (Join-Path $OutputDirectory "TokenSize_Threshold_Report.csv") -NoTypeInformation
-    $topUsersReport | Export-Csv -Path (Join-Path $OutputDirectory "TokenSize_TopUsers_Report.csv") -NoTypeInformation
+    Write-Log -Message "Génération des rapports CSV..." -LogLevel "INFO"
+
+    $reportAll = $Users | Where-Object { $_.TokenSize -ge $Threshold }
+    $reportTop = $Users | Sort-Object TokenSize -Descending | Select-Object -First $TopUsers
+
+    $date = Get-Date -Format "yyyyMMdd_HHmmss"
+    $fileAll = "TokenSizeReport_$date.csv"
+    $fileTop = "TopUsersReport_$date.csv"
+
+    $reportAll | Export-Csv -Path $fileAll -NoTypeInformation -Delimiter ";"
+    $reportTop | Export-Csv -Path $fileTop -NoTypeInformation -Delimiter ";"
+
+    Write-Log -Message "Rapport principal : $fileAll" -LogLevel "INFO"
+    Write-Log -Message "Top utilisateurs : $fileTop" -LogLevel "INFO"
 }
 
-# Fonction principale
-function Main {
-    $domain = Get-DomainContext -TrustedDomain $TrustedDomain
-    $users = Get-DomainUsers -Domain $domain -AccountName $AccountName
+# Exécution principale du script
+try {
+    Check-Environment
 
-    $userTokenSizes = [System.Collections.ArrayList]::new()
-    $totalUsers = $users.Count
-    $processedUsers = 0
+    $users = Get-ADUsers -AccountName $AccountName -TrustedDomain $TrustedDomain
+    $usersWithToken = @()
 
     foreach ($user in $users) {
-        $tokenSize = Calculate-TokenSize -User $user.GetDirectoryEntry()
-        $userTokenSizes.Add([PSCustomObject]@{
-            sAMAccountName = $user.Properties["sAMAccountName"][0]
-            TokenSize = $tokenSize
-        })
-
-        $processedUsers++
-        if ($ProgressBar) {
-            Write-Progress -Activity "Calcul de la taille des jetons" -Status "$processedUsers sur $totalUsers utilisateurs traitÃ©s" -PercentComplete (($processedUsers / $totalUsers) * 100)
+        $tokenSize = Calculate-TokenSize -User $user
+        $usersWithToken += [PSCustomObject]@{
+            SamAccountName = $user.SamAccountName
+            TokenSize      = $tokenSize
         }
     }
 
-    Export-Reports -UserTokenSizes $userTokenSizes -OutputDirectory $OutputDirectory
-
-    if ($Output
-::contentReference[oaicite:0]{index=0}
- 
+    Generate-TokenReport -Users $usersWithToken
+    Write-Log -Message "Script terminé avec succès." -LogLevel "INFO"
+}
+catch {
+    Write-Log -Message "Erreur : $_" -LogLevel "ERROR"
+}
