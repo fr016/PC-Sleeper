@@ -1,1 +1,60 @@
 
+<#
+.SYNOPSIS
+    Restarts scheduled tasks that failed in their last execution.
+
+.DESCRIPTION
+    This function retrieves all scheduled tasks, checks their last run result, and restarts those that did not complete successfully. It logs each action taken.
+
+.PARAMETER LogFilePath
+    The full path to the log file where actions will be recorded.
+
+.EXAMPLE
+    Restart-FailedScheduledTasks -LogFilePath "C:\Logs\TaskRestart.log"
+#>
+function Restart-FailedScheduledTasks {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        [string]$LogFilePath
+    )
+
+    # Function to write messages to the log file
+    function Write-Log {
+        param (
+            [string]$Message
+        )
+        $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        Add-Content -Path $LogFilePath -Value "$timestamp - $Message"
+    }
+
+    try {
+        # Retrieve all scheduled tasks
+        $tasks = Get-ScheduledTask
+
+        foreach ($task in $tasks) {
+            # Retrieve the last run result of the task
+            $taskInfo = Get-ScheduledTaskInfo -TaskName $task.TaskName
+
+            # Check if the last run result indicates failure (non-zero exit code)
+            if ($taskInfo.LastTaskResult -ne 0) {
+                Write-Log "Task '$($task.TaskName)' failed with exit code $($taskInfo.LastTaskResult). Attempting to restart."
+
+                try {
+                    # Attempt to restart the task
+                    Start-ScheduledTask -TaskName $task.TaskName
+                    Write-Log "Task '$($task.TaskName)' restarted successfully."
+                }
+                catch {
+                    Write-Log "Error restarting task '$($task.TaskName)': $_"
+                }
+            }
+        }
+    }
+    catch {
+        Write-Log "Error retrieving scheduled tasks: $_"
+    }
+}
+
+# Example usage of the function
+Restart-FailedScheduledTasks -LogFilePath "C:\Logs\TaskRestart.log"
