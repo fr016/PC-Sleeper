@@ -35,19 +35,6 @@ param (
 )
 
 function Get-DomainControllerIPs {
-    <#
-    .SYNOPSIS
-    Recupere les adresses IP des controleurs de domaine membres d'un groupe AD.
-
-    .DESCRIPTION
-    Cette fonction obtient les noms des ordinateurs membres du groupe AD specifie dont le nom se termine par un signe dollar, puis obtient leurs adresses IP.
-
-    .PARAMETER GroupName
-    Nom du groupe Active Directory contenant les controleurs de domaine.
-
-    .EXAMPLE
-    Get-DomainControllerIPs -GroupName "GroupeDC"
-    #>
     param (
         [Parameter(Mandatory = $true)]
         [string]$GroupName
@@ -97,7 +84,13 @@ function Compare-DnsAndDcIPs {
 
     foreach ($ip in $DnsIPs) {
         if ($DcIPs -contains $ip) {
-            Write-Host "L'adresse IP $ip correspond a un controleur de domaine."
+            try {
+                $hostname = [System.Net.Dns]::GetHostEntry($ip).HostName
+                Write-Host "L'adresse IP $ip correspond au controleur de domaine : $hostname."
+            }
+            catch {
+                Write-Host "L'adresse IP $ip correspond a un controleur de domaine, mais le nom d'hote n'a pas pu etre resolu."
+            }
         }
         else {
             try {
