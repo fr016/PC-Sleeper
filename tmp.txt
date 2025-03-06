@@ -1,1 +1,227 @@
 
+#requires -Version 5.1
+#requires -Modules ActiveDirectory, DnsClient
+
+<#
+.SYNOPSIS
+Vérifie que les enregistrements DNS d'un domaine correspondent aux adresses IP des contrôleurs de domaine dans un groupe AD et s'assure qu'un nombre minimum de contrôleurs de domaine est présent.
+
+.DESCRIPTION
+Ce script récupère les enregistrements DNS d'un domaine spécifié et les compare aux adresses IP des contrôleurs de domaine membres d'un groupe Active Directory donné. Il vérifie également que le nombre de contrôleurs de domaine est supérieur ou égal à un seuil défini. Les résultats de la vérification sont journalisés.
+
+.PARAMETER DomainName
+Nom du domaine à vérifier.
+
+.PARAMETER GroupName
+Nom du groupe Active Directory contenant les contrôleurs de domaine.
+
+.PARAMETER LogFilePath
+Chemin complet du fichier de journalisation.
+
+.PARAMETER MinimumDcCount
+Nombre minimum de contrôleurs de domaine requis dans le groupe.
+
+.EXAMPLE
+.\Verifier-DnsDcCorrespondance.ps1 -DomainName "example.com" -GroupName "GroupeDC" -LogFilePath "C:\Logs\Verification.log" -MinimumDcCount 10
+
+.NOTES
+Auteur: Votre Nom
+Date: 2025-03-06
+#>
+param (
+    [Parameter(Mandatory = $true)]
+    [string]$DomainName,
+
+    [Parameter(Mandatory = $true)]
+    [string]$GroupName,
+
+    [Parameter(Mandatory = $true)]
+    [string]$LogFilePath,
+
+    [Parameter(Mandatory = $true)]
+    [int]$MinimumDcCount
+)
+
+function Write-Log {
+    <#
+    .SYNOPSIS
+    Écrit un message dans le fichier de journal avec un horodatage.
+
+    .DESCRIPTION
+    Cette fonction ajoute un message horodaté au fichier de journal spécifié.
+
+    .PARAMETER Message
+    Message à écrire dans le journal.
+
+    .EXAMPLE
+    Write-Log -Message "Ceci est un message de test."
+    #>
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$Message
+    )
+    $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    $logEntry = "$timestamp - $Message"
+    Write-Output $logEntry | Out-File -FilePath $LogFilePath -Append
+}
+
+function Get-DomainControllerIPs {
+    <#
+    .SYNOPSIS
+    Récupère les adresses IP des contrôleurs de domaine membres d'un groupe AD.
+
+    .DESCRIPTION
+    Cette fonction obtient les noms des ordinateurs membres du groupe AD spécifié dont le nom se termine par un signe dollar, puis obtient leurs adresses IP.
+
+    .PARAMETER GroupName
+    Nom du groupe Active Directory contenant les contrôleurs de domaine.
+
+    .EXAMPLE
+    Get-DomainControllerIPs -GroupName "GroupeDC"
+    #>
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$GroupName
+    )
+    try {
+        $dcNames = Get-ADGroupMember -Identity $GroupName -Recursive |
+            Where-Object { $_.objectClass -eq 'computer' -and $_.Name -like '*$' } |
+            Select-Object -ExpandProperty Name
+
+        $dcIPs = foreach ($dc in $dcNames) {
+            $hostname = $dc.TrimEnd('$')
+            $ip = [System.Net.Dns]::GetHostAddresses($hostname) |
+                Where-Object { $_.AddressFamily -eq 'InterNetwork' } |
+                Select-Object -ExpandProperty IPAddressToString
+            [PSCustomObject]@{ Name = $hostname; IP = $ip }
+        }
+        return $dcIPs
+    }
+    catch {
+        Write-Log -Message "Erreur lors de la récupération des adresses IP des contrôleurs de domaine : $_"
+        throw $_
+    }
+}
+
+function Get-DnsARecords {
+    <#
+    .SYNOPSIS
+    Récupère les enregistrements DNS de type A pour un domaine.
+
+    .DESCRIPTION
+    Cette fonction obtient les enregistrements DNS de type A pour le domaine spécifié.
+
+    .PARAMETER DomainName
+    Nom du domaine à vérifier.
+
+    .EXAMPLE
+    Get-DnsARecords -DomainName "example.com"
+    #>
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$DomainName
+    )
+    try {
+        $dnsRecords = Resolve-DnsName -Name $DomainName -Type A
+        $aRecords = $dnsRecords | Where-Object { $_.QueryType -eq 'A' } | Select-Object -ExpandProperty IPAddress
+        return $aRecords
+    }
+    catch {
+        Write-Log -Message "Erreur lors de la récupération des enregistrements DNS pour le domaine $DomainName : $_"
+        throw $_
+    }
+}
+
+function Get-HostnameFromIP {
+    <#
+    .SYNOPSIS
+    Récupère le nom d'hôte associé à une adresse IP.
+
+    .DESCRIPTION
+    Cette fonction effectue une recherche DNS inversée pour obtenir le nom d'hôte associé à l'adresse IP spécifiée.
+
+    .PARAMETER IPAddress
+    Adresse IP pour laquelle obtenir le nom d'hôte.
+
+    .EXAMPLE
+    Get-HostnameFromIP -IPAddress "192.168.1.1"
+    #>
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$IPAddress
+    )
+    try {
+        $hostname = (Resolve-DnsName -Name $IPAddress -ErrorAction Stop).NameHost
+        return $hostname
+    }
+    catch {
+        Write-Log -Message "Impossible de résoudre le nom d'hôte pour l'adresse IP $IPAddress : $_"
+        return $null
+    }
+}
+
+function Compare-DnsAndDcIPs {
+    <#
+    .SYNOPSIS
+    Compare les adresses IP des enregistrements DNS avec celles des contrôleurs de domaine.
+
+    .DESCRIPTION
+    Cette fonction compare les adresses IP obtenues des enregistrements DNS avec celles des contrôleurs de domaine. Si une adresse IP ne correspond à aucun contrôleur de domaine connu, elle effectue une résolution DNS inverse pour obtenir le nom d'hôte associé et inclut ce nom dans le message d'alerte.
+
+    .PARAMETER DnsIPs
+    Liste des adresses IP des enregistrements DNS.
+
+    .PARAMETER DcIPs
+    Liste des adresses IP des contrôleurs de domaine.
+
+    .EXAMPLE
+    Compare-DnsAndDcIPs -DnsIPs $dnsIPs -DcIPs $dcIPs
+    #>
+    param (
+        [Parameter(Mandatory = $true)]
+        [array]$DnsIPs,
+
+        [Parameter(Mandatory = $true)]
+        [array]$DcIPs
+    )
+
+    foreach ($ip in $DnsIPs) {
+        if ($DcIPs -contains $ip) {
+            Write-Log -Message "L'adresse IP $ip correspond à un contrôleur de domaine."
+        }
+        else {
+            try {
+                $hostname = [System.Net.Dns]::GetHostEntry($ip).HostName
+                Write-Log -Message "ALERTE : L'adresse IP $ip (nom d'hôte : $hostname) ne correspond à aucun contrôleur de domaine connu."
+            }
+            catch {
+                Write-Log -Message "ALERTE : L'adresse IP $ip ne correspond à aucun contrôleur de domaine connu et le nom d'hôte n'a pas pu être résolu."
+            }
+        }
+    }
+}
+
+# Journalisation de début de script
+Write-Log -Message "Début de la vérification des enregistrements DNS pour le domaine $DomainName."
+
+# Récupération des adresses IP des contrôleurs de domaine
+$dcInfo = Get-DomainControllerIPs -GroupName $GroupName
+$dcIPs = $dcInfo.IP
+
+# Vérification du nombre de contrôleurs de domaine
+if ($dcIPs.Count -lt $MinimumDcCount) {
+    Write-Log -Message "ALERTE : Le nombre de contrôleurs de domaine est insuffisant. Nombre actuel : $($dcIPs.Count), Seuil minimum : $MinimumDcCount."
+}
+else {
+    Write-Log -Message "Le nombre de contrôleurs de domaine est conforme ($($dcIPs.Count) détectés, minimum requis : $MinimumDcCount)."
+}
+
+# Récupération des enregistrements DNS de type A pour le domaine
+$dnsIPs = Get-DnsARecords -DomainName $DomainName
+
+# Comparaison des adresses IP DNS avec celles des contrôleurs de domaine
+Compare-DnsAndDcIPs -DnsIPs $dnsIPs -DcIPs $dcIPs
+
+# Journalisation de fin de script
+Write-Log -Message "Fin de la vérification des enregistrements DNS pour le domaine $DomainName."
+
