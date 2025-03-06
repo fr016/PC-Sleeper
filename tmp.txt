@@ -34,155 +34,24 @@ param (
     [int]$MinimumDcCount = 10
 )
 
-$reportPath = "C:\Logs\Verification_Report.html"
+$reportPath = "$env:TMP\Verification_Report.html"
 $reportEntries = @()
 
 function Add-ToReport {
-    <#
-    .SYNOPSIS
-    Ajoute un message au rapport HTML avec une couleur specifique.
-
-    .DESCRIPTION
-    Cette fonction permet d'ajouter une ligne de message au rapport HTML final.
-
-    .PARAMETER Message
-    Texte du message a ajouter au rapport.
-
-    .PARAMETER Color
-    Couleur du texte dans le rapport (par defaut : noir).
-    #>
     param (
         [string]$Message,
         [string]$Color = "black"
     )
-    $reportEntries += "<p style='color:$Color;'>$Message</p>"
+    $script:reportEntries += "<p style='color:$Color;'>$Message</p>"
 }
 
 function Generate-Report {
-    <#
-    .SYNOPSIS
-    Genere le rapport HTML final et l'ouvre dans le navigateur.
-
-    .DESCRIPTION
-    Cette fonction assemble les messages accumules dans le rapport et cree un fichier HTML.
-    #>
     $reportContent = "<html><head><title>Rapport de verification DNS</title></head><body>"
     $reportContent += "<h2>Verification des enregistrements DNS pour $DomainName</h2>"
     $reportContent += ($reportEntries -join "")
     $reportContent += "</body></html>"
     $reportContent | Out-File -FilePath $reportPath -Encoding UTF8
     Start-Process $reportPath
-}
-
-function Get-DomainControllerIPs {
-    <#
-    .SYNOPSIS
-    Recupere les adresses IP des controleurs de domaine membres d'un groupe AD.
-    
-    .DESCRIPTION
-    Cette fonction obtient les noms des ordinateurs membres du groupe AD specifie et recupere leurs adresses IP.
-    
-    .PARAMETER GroupName
-    Nom du groupe Active Directory contenant les controleurs de domaine.
-    #>
-    param (
-        [Parameter(Mandatory = $true)]
-        [string]$GroupName
-    )
-    try {
-        $dcNames = Get-ADGroupMember -Identity $GroupName -server $DomainName -Recursive | Select-Object -ExpandProperty Name
-
-        $dcIPs = foreach ($dc in $dcNames) {
-            $hostname = $dc.TrimEnd('$')
-            $ip = [System.Net.Dns]::GetHostAddresses($hostname) |
-                Where-Object { $_.AddressFamily -eq 'InterNetwork' } |
-                Select-Object -ExpandProperty IPAddressToString
-            [PSCustomObject]@{ Name = $hostname; IP = $ip }
-        }
-        return $dcIPs
-    }
-    catch {
-        Write-Host "Erreur lors de la recuperation des adresses IP des controleurs de domaine : $_"
-        throw $_
-    }
-}
-
-function Get-DnsARecords {
-    <#
-    .SYNOPSIS
-    Recupere les enregistrements DNS de type A pour un domaine.
-
-    .DESCRIPTION
-    Cette fonction interroge les DNS pour obtenir les adresses IP associees a un domaine.
-    
-    .PARAMETER DomainName
-    Nom du domaine a verifier.
-    #>
-    param (
-        [Parameter(Mandatory = $true)]
-        [string]$DomainName
-    )
-    try {
-        $dnsRecords = Resolve-DnsName -Name $DomainName -Type A
-        $aRecords = $dnsRecords | Where-Object { $_.QueryType -eq 'A' } | Select-Object -ExpandProperty IPAddress
-        return $aRecords
-    }
-    catch {
-        Write-Host "Erreur lors de la recuperation des enregistrements DNS pour le domaine $DomainName : $_"
-        throw $_
-    }
-}
-
-function Compare-DnsAndDcIPs {
-    <#
-    .SYNOPSIS
-    Compare les adresses IP des enregistrements DNS avec celles des controleurs de domaine.
-
-    .DESCRIPTION
-    Cette fonction verifie si les adresses IP resolues pour un domaine correspondent aux controleurs de domaine connus.
-    
-    .PARAMETER DnsIPs
-    Liste des adresses IP des enregistrements DNS.
-    
-    .PARAMETER DcIPs
-    Liste des adresses IP des controleurs de domaine.
-    #>
-    param (
-        [Parameter(Mandatory = $true)]
-        [array]$DnsIPs,
-
-        [Parameter(Mandatory = $true)]
-        [array]$DcIPs
-    )
-
-    foreach ($ip in $DnsIPs) {
-        if ($DcIPs -contains $ip) {
-            try {
-                $hostname = [System.Net.Dns]::GetHostEntry($ip).HostName
-                $message = "L'adresse IP $ip correspond au controleur de domaine : $hostname."
-                Write-Host $message
-                Add-ToReport -Message $message -Color "green"
-            }
-            catch {
-                $message = "L'adresse IP $ip correspond a un controleur de domaine, mais le nom d'hote n'a pas pu etre resolu."
-                Write-Host $message
-                Add-ToReport -Message $message -Color "orange"
-            }
-        }
-        else {
-            try {
-                $hostname = [System.Net.Dns]::GetHostEntry($ip).HostName
-                $message = "ALERTE : L'adresse IP $ip (nom d'hote : $hostname) ne correspond a aucun controleur de domaine connu."
-                Write-Host $message
-                Add-ToReport -Message $message -Color "red"
-            }
-            catch {
-                $message = "ALERTE : L'adresse IP $ip ne correspond a aucun controleur de domaine connu et le nom d'hote n'a pas pu etre resolu."
-                Write-Host $message
-                Add-ToReport -Message $message -Color "red"
-            }
-        }
-    }
 }
 
 Write-Host "Debut de la verification des enregistrements DNS pour le domaine $DomainName."
