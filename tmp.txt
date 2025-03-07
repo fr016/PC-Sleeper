@@ -12,15 +12,33 @@ function Test-ADReplicationConvergence {
     .PARAMETER OU
     Distinguished Name (DN) of the Organizational Unit where the temporary object will be created. For example: "OU=Test,DC=example,DC=com". If not specified, the default "Users" container of the target domain will be used.
 
+    .PARAMETER MaxWaitTime
+    Maximum time (in seconds) to wait for replication before timing out. Default is 600 seconds (10 minutes).
+
+    .PARAMETER InitialInterval
+    Initial wait time (in seconds) between replication checks. Default is 5 seconds.
+
+    .PARAMETER MaxInterval
+    Maximum wait time (in seconds) between replication checks. Default is 30 seconds.
+
     .EXAMPLE
-    Test-ADReplicationConvergence -DomainFQDN "example.com" -OU "OU=Test,DC=example,DC=com"
+    Test-ADReplicationConvergence -DomainFQDN "example.com" -OU "OU=Test,DC=example,DC=com" -MaxWaitTime 900 -InitialInterval 10 -MaxInterval 60
     #>
     param (
         [Parameter(Mandatory = $true)]
         [string]$DomainFQDN,
 
         [Parameter(Mandatory = $false)]
-        [string]$OU
+        [string]$OU,
+
+        [Parameter(Mandatory = $false)]
+        [int]$MaxWaitTime = 600,
+
+        [Parameter(Mandatory = $false)]
+        [int]$InitialInterval = 5,
+
+        [Parameter(Mandatory = $false)]
+        [int]$MaxInterval = 30
     )
 
     begin {
@@ -58,15 +76,24 @@ function Test-ADReplicationConvergence {
         foreach ($DC in $DCs) {
             try {
                 $startTime = Get-Date
+                $currentInterval = $InitialInterval
                 do {
-                    Start-Sleep -Seconds 10
+                    Start-Sleep -Seconds $currentInterval
                     $user = Get-ADUser -Identity $samAccountName -Server $DC -ErrorAction SilentlyContinue
-                } while (-not $user)
-                $endTime = Get-Date
-                $replicationTime = $endTime - $startTime
-                Write-Host "Replicated on $DC in $($replicationTime.TotalSeconds) seconds"
+                    if (-not $user) {
+                        $currentInterval = [Math]::Min($currentInterval * 2, $MaxInterval)
+                    }
+                } while (-not $user -and ((Get-Date) - $startTime).TotalSeconds -lt $MaxWaitTime)
+
+                if ($user) {
+                    $endTime = Get-Date
+                    $replicationTime = $endTime - $startTime
+                    Write-Host "Replicated on $DC in $($replicationTime.TotalSeconds) seconds"
+                } else {
+                    Write-Error "Replication to $DC did not occur within the allotted time of $MaxWaitTime seconds"
+                }
             } catch {
-                Write-Error "Error checking replication on $DC : $_"
+                Write-Error "Error checking replication on $DC: $_"
             }
         }
     }
@@ -85,5 +112,5 @@ function Test-ADReplicationConvergence {
 # Example usage with the target domain's FQDN and default OU
 Test-ADReplicationConvergence -DomainFQDN "example.com"
 
-# Example usage with the target domain's FQDN and a specific OU
-Test-ADReplicationConvergence -DomainFQDN "example.com" -OU "OU=Test,DC=example,DC=com"
+# Example usage with the target domain's FQDN, specific OU, and custom timing parameters
+Test-ADReplicationConvergence -DomainFQDN "example.com" -OU "OU=Test,DC=example,DC=com" -MaxWaitTime 900 -InitialInterval 10 -MaxInterval 60
