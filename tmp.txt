@@ -4,50 +4,59 @@ function Test-ADReplicationConvergence {
     Mesure le temps de réplication d'un objet Active Directory depuis le PDC vers tous les contrôleurs de domaine.
 
     .DESCRIPTION
-    Cette fonction crée un objet temporaire dans une unité d'organisation spécifiée sur le contrôleur de domaine principal (PDC) et mesure le temps nécessaire à chaque contrôleur de domaine pour répliquer cet objet.
+    Cette fonction crée un objet utilisateur temporaire désactivé avec un nom aléatoire indiquant un test de convergence AD dans une unité d'organisation spécifiée ou, par défaut, dans le conteneur "Users" du domaine. Elle mesure le temps nécessaire à chaque contrôleur de domaine pour répliquer cet objet, puis supprime l'utilisateur.
 
     .PARAMETER OU
-    Chemin de l'unité d'organisation où l'objet temporaire sera créé. Par exemple : "OU=Test,DC=example,DC=com".
+    Chemin de l'unité d'organisation où l'objet temporaire sera créé. Par exemple : "OU=Test,DC=example,DC=com". Si non spécifié, le conteneur "Users" du domaine sera utilisé par défaut.
 
     .EXAMPLE
     Test-ADReplicationConvergence -OU "OU=Test,DC=example,DC=com"
     #>
     param (
-        [Parameter(Mandatory = $true)]
-        [string]$OU
+        [Parameter(Mandatory = $false)]
+        [string]$OU = (Get-ADDomain).UsersContainer
     )
 
-    # Obtenir le PDC
-    $PDC = (Get-ADDomainController -Filter {OperationsMasterRoles -contains "PDCEmulator"}).Hostname
-    Write-Host "PDC détecté : $PDC"
+    begin {
+        # Obtenir le PDC
+        $PDC = (Get-ADDomain).PDCEmulator
+        Write-Host "PDC détecté : $PDC"
 
-    # Obtenir la liste de tous les contrôleurs de domaine
-    $DCs = Get-ADDomainController -Filter * | Select-Object -ExpandProperty Hostname
+        # Obtenir la liste de tous les contrôleurs de domaine
+        $DCs = Get-ADDomainController -Filter * | Select-Object -ExpandProperty HostName
 
-    # Nom unique pour l'objet temporaire
-    $timestamp = Get-Date -Format "yyyyMMddHHmmss"
-    $tempUser = "TempUser_$timestamp"
+        # Générer un nom unique pour l'utilisateur temporaire
+        $guid = [guid]::NewGuid().ToString()
+        $tempUser = "AD_Convergence_Test_$guid"
 
-    # Créer l'objet utilisateur sur le PDC
-    New-ADUser -Name $tempUser -SamAccountName $tempUser -Path $OU -Server $PDC -AccountPassword (ConvertTo-SecureString "P@ssw0rd123" -AsPlainText -Force) -Enabled $true
-    Write-Host "Utilisateur temporaire '$tempUser' créé sur $PDC à $(Get-Date)"
-
-    # Mesurer le temps de réplication pour chaque DC
-    foreach ($DC in $DCs) {
-        $startTime = Get-Date
-        do {
-            Start-Sleep -Seconds 5
-            $user = Get-ADUser -Identity $tempUser -Server $DC -ErrorAction SilentlyContinue
-        } while (-not $user)
-        $endTime = Get-Date
-        $replicationTime = $endTime - $startTime
-        Write-Host "Répliqué sur $DC en $($replicationTime.TotalSeconds) secondes"
+        # Créer l'utilisateur désactivé sur le PDC
+        New-ADUser -Name $tempUser -SamAccountName $tempUser -Path $OU -Enabled $false -Server $PDC
+        Write-Host "Utilisateur temporaire '$tempUser' créé et désactivé sur $PDC à $(Get-Date)"
     }
 
-    # Supprimer l'objet temporaire
-    Remove-ADUser -Identity $tempUser -Server $PDC
-    Write-Host "Utilisateur temporaire '$tempUser' supprimé de $PDC"
+    process {
+        # Mesurer le temps de réplication pour chaque DC
+        foreach ($DC in $DCs) {
+            $startTime = Get-Date
+            do {
+                Start-Sleep -Seconds 5
+                $user = Get-ADUser -Identity $tempUser -Server $DC -ErrorAction SilentlyContinue
+            } while (-not $user)
+            $endTime = Get-Date
+            $replicationTime = $endTime - $startTime
+            Write-Host "Répliqué sur $DC en $($replicationTime.TotalSeconds) secondes"
+        }
+    }
+
+    end {
+        # Supprimer l'utilisateur temporaire
+        Remove-ADUser -Identity $tempUser -Server $PDC
+        Write-Host "Utilisateur temporaire '$tempUser' supprimé de $PDC à $(Get-Date)"
+    }
 }
 
-# Exemple d'utilisation
+# Exemple d'utilisation avec l'OU par défaut
+Test-ADReplicationConvergence
+
+# Exemple d'utilisation avec une OU spécifique
 Test-ADReplicationConvergence -OU "OU=Test,DC=example,DC=com"
