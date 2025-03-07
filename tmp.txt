@@ -1,16 +1,16 @@
 function Test-ADReplicationConvergence {
     <#
     .SYNOPSIS
-    Mesure le temps de replication d'un objet Active Directory depuis le PDC vers tous les controleurs de domaine.
+    Measures the replication latency of an Active Directory object from the PDC to all domain controllers.
 
     .DESCRIPTION
-    Cette fonction cree un objet utilisateur temporaire desactive avec un nom aleatoire indiquant un test de convergence AD dans une unite d'organisation specifiee ou, par defaut, dans le conteneur "Users" du domaine cible. Elle mesure le temps necessaire a chaque controleur de domaine pour reperer cet objet, puis supprime l'utilisateur.
+    This function creates a temporary, disabled user object with a randomly generated name indicating it's for an AD convergence test in a specified Organizational Unit (OU) or, by default, in the "Users" container of the target domain. It measures the time taken for each domain controller to replicate this object and then deletes the user without confirmation.
 
     .PARAMETER DomainFQDN
-    Nom de domaine complet (FQDN) du domaine cible. Par exemple : "example.com".
+    Fully Qualified Domain Name (FQDN) of the target domain. For example: "example.com".
 
     .PARAMETER OU
-    Chemin de l'unite d'organisation ou l'objet temporaire sera cree. Par exemple : "OU=Test,DC=example,DC=com". Si non specifie, le conteneur "Users" du domaine cible sera utilise par defaut.
+    Distinguished Name (DN) of the Organizational Unit where the temporary object will be created. For example: "OU=Test,DC=example,DC=com". If not specified, the default "Users" container of the target domain will be used.
 
     .EXAMPLE
     Test-ADReplicationConvergence -DomainFQDN "example.com" -OU "OU=Test,DC=example,DC=com"
@@ -25,31 +25,31 @@ function Test-ADReplicationConvergence {
 
     begin {
         try {
-            # Importer le module Active Directory
+            # Import the Active Directory module
             Import-Module ActiveDirectory -ErrorAction Stop
 
-            # Obtenir le controleur de domaine principal (PDC) du domaine cible
-            $PDC = (Get-ADDomainController -DomainName $DomainFQDN -Discover -Service "PrimaryDC").HostName
-            Write-Host "PDC detecte : $PDC"
+            # Retrieve the PDC of the target domain
+            $PDC = (Get-ADDomain -Server $DomainFQDN).PDCEmulator
+            Write-Host "Detected PDC: $PDC"
 
-            # Si l'OU n'est pas specifiee, utiliser le conteneur "Users" par defaut du domaine cible
+            # If OU is not specified, use the default "Users" container of the target domain
             if (-not $OU) {
                 $OU = (Get-ADDomain -Server $PDC).UsersContainer
             }
 
-            # Obtenir la liste de tous les controleurs de domaine du domaine cible
+            # Retrieve the list of all domain controllers in the target domain
             $DCs = Get-ADDomainController -Filter * -Server $PDC | Select-Object -ExpandProperty HostName
 
-            # Generer un nom unique pour l'utilisateur temporaire
+            # Generate a unique name for the temporary user
             $guid = [guid]::NewGuid().ToString("N").Substring(0, 8)
             $tempUser = "ADCTest_$guid"
             $samAccountName = $tempUser.Substring(0, [Math]::Min(20, $tempUser.Length))
 
-            # Creer l'utilisateur desactive sur le PDC
+            # Create the disabled user on the PDC
             New-ADUser -Name $tempUser -SamAccountName $samAccountName -Path $OU -Enabled $false -Server $PDC
-            Write-Host "Utilisateur temporaire '$tempUser' cree et desactive sur $PDC a $(Get-Date)"
+            Write-Host "Temporary user '$tempUser' created and disabled on $PDC at $(Get-Date)"
         } catch {
-            Write-Error "Erreur lors de l'initialisation : $_"
+            Write-Error "Initialization error: $_"
             return
         }
     }
@@ -64,26 +64,26 @@ function Test-ADReplicationConvergence {
                 } while (-not $user)
                 $endTime = Get-Date
                 $replicationTime = $endTime - $startTime
-                Write-Host "Replique sur $DC en $($replicationTime.TotalSeconds) secondes"
+                Write-Host "Replicated on $DC in $($replicationTime.TotalSeconds) seconds"
             } catch {
-                Write-Error "Erreur lors de la verification sur $DC : $_"
+                Write-Error "Error checking replication on $DC: $_"
             }
         }
     }
 
     end {
         try {
-            # Supprimer l'utilisateur temporaire
-            Remove-ADUser -Identity $samAccountName -Server $PDC
-            Write-Host "Utilisateur temporaire '$tempUser' supprime de $PDC a $(Get-Date)"
+            # Remove the temporary user without confirmation
+            Remove-ADUser -Identity $samAccountName -Server $PDC -Confirm:$false
+            Write-Host "Temporary user '$tempUser' removed from $PDC at $(Get-Date)"
         } catch {
-            Write-Error "Erreur lors de la suppression de l'utilisateur temporaire : $_"
+            Write-Error "Error removing temporary user: $_"
         }
     }
 }
 
-# Exemple d'utilisation avec le FQDN du domaine cible et l'OU par defaut
+# Example usage with the target domain's FQDN and default OU
 Test-ADReplicationConvergence -DomainFQDN "example.com"
 
-# Exemple d'utilisation avec le FQDN du domaine cible et une OU specifique
+# Example usage with the target domain's FQDN and a specific OU
 Test-ADReplicationConvergence -DomainFQDN "example.com" -OU "OU=Test,DC=example,DC=com"
