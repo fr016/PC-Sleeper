@@ -1,65 +1,53 @@
-#requires -Version 5.1
-#requires -Modules ActiveDirectory, DnsClient
+function Test-ADReplicationConvergence {
+    <#
+    .SYNOPSIS
+    Mesure le temps de réplication d'un objet Active Directory depuis le PDC vers tous les contrôleurs de domaine.
 
-<##
-.SYNOPSIS
-Verifie que les enregistrements DNS d'un domaine correspondent aux adresses IP des controleurs de domaine dans un groupe AD et s'assure qu'un nombre minimum de controleurs de domaine est present.
+    .DESCRIPTION
+    Cette fonction crée un objet temporaire dans une unité d'organisation spécifiée sur le contrôleur de domaine principal (PDC) et mesure le temps nécessaire à chaque contrôleur de domaine pour répliquer cet objet.
 
-.DESCRIPTION
-Ce script recupere les enregistrements DNS d'un domaine specifie et les compare aux adresses IP des controleurs de domaine membres d'un groupe Active Directory donne. Il verifie egalement que le nombre de controleurs de domaine est superieur ou egal a un seuil defini. Les resultats de la verification sont affiches et un rapport HTML est genere.
+    .PARAMETER OU
+    Chemin de l'unité d'organisation où l'objet temporaire sera créé. Par exemple : "OU=Test,DC=example,DC=com".
 
-.PARAMETER DomainName
-Nom du domaine a verifier.
-
-.PARAMETER GroupName
-Nom du groupe Active Directory contenant les controleurs de domaine.
-
-.PARAMETER MinimumDcCount
-Nombre minimum de controleurs de domaine requis dans le groupe (defaut: 10).
-
-.EXAMPLE
-.\Verifier-DnsDcCorrespondance.ps1 -DomainName "example.com" -GroupName "GroupeDC"
-
-.NOTES
-Auteur: Votre Nom
-Date: 2025-03-06
-#>
-param (
-    [Parameter(Mandatory = $true)]
-    [string]$DomainName,
-
-    [Parameter(Mandatory = $true)]
-    [string]$GroupName,
-
-    [int]$MinimumDcCount = 10
-)
-
-$reportPath = "$env:TMP\Verification_Report.html"
-$reportEntries = @()
-
-function Add-ToReport {
+    .EXAMPLE
+    Test-ADReplicationConvergence -OU "OU=Test,DC=example,DC=com"
+    #>
     param (
-        [string]$Message,
-        [string]$Color = "black"
+        [Parameter(Mandatory = $true)]
+        [string]$OU
     )
-    $script:reportEntries += "<p style='color:$Color;'>$Message</p>"
+
+    # Obtenir le PDC
+    $PDC = (Get-ADDomainController -Filter {OperationsMasterRoles -contains "PDCEmulator"}).Hostname
+    Write-Host "PDC détecté : $PDC"
+
+    # Obtenir la liste de tous les contrôleurs de domaine
+    $DCs = Get-ADDomainController -Filter * | Select-Object -ExpandProperty Hostname
+
+    # Nom unique pour l'objet temporaire
+    $timestamp = Get-Date -Format "yyyyMMddHHmmss"
+    $tempUser = "TempUser_$timestamp"
+
+    # Créer l'objet utilisateur sur le PDC
+    New-ADUser -Name $tempUser -SamAccountName $tempUser -Path $OU -Server $PDC -AccountPassword (ConvertTo-SecureString "P@ssw0rd123" -AsPlainText -Force) -Enabled $true
+    Write-Host "Utilisateur temporaire '$tempUser' créé sur $PDC à $(Get-Date)"
+
+    # Mesurer le temps de réplication pour chaque DC
+    foreach ($DC in $DCs) {
+        $startTime = Get-Date
+        do {
+            Start-Sleep -Seconds 5
+            $user = Get-ADUser -Identity $tempUser -Server $DC -ErrorAction SilentlyContinue
+        } while (-not $user)
+        $endTime = Get-Date
+        $replicationTime = $endTime - $startTime
+        Write-Host "Répliqué sur $DC en $($replicationTime.TotalSeconds) secondes"
+    }
+
+    # Supprimer l'objet temporaire
+    Remove-ADUser -Identity $tempUser -Server $PDC
+    Write-Host "Utilisateur temporaire '$tempUser' supprimé de $PDC"
 }
 
-function Generate-Report {
-    $reportContent = "<html><head><title>Rapport de verification DNS</title></head><body>"
-    $reportContent += "<h2>Verification des enregistrements DNS pour $DomainName</h2>"
-    $reportContent += ($reportEntries -join "")
-    $reportContent += "</body></html>"
-    $reportContent | Out-File -FilePath $reportPath -Encoding UTF8
-    Start-Process $reportPath
-}
-
-Write-Host "Debut de la verification des enregistrements DNS pour le domaine $DomainName."
-Add-ToReport -Message "Debut de la verification des enregistrements DNS pour le domaine $DomainName."
-
-$dcInfo = Get-DomainControllerIPs -GroupName $GroupName
-$dcIPs = $dcInfo.IP
-
-Compare-DnsAndDcIPs -DnsIPs (Get-DnsARecords -DomainName $DomainName) -DcIPs $dcIPs
-
-Generate-Report
+# Exemple d'utilisation
+Test-ADReplicationConvergence -OU "OU=Test,DC=example,DC=com"
