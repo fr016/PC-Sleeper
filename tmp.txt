@@ -59,14 +59,14 @@ function Test-ADReplicationConvergence {
             try {
                 $startTime = Get-Date
                 do {
-                    Start-Sleep -Seconds 5
+                    Start-Sleep -Seconds 10
                     $user = Get-ADUser -Identity $samAccountName -Server $DC -ErrorAction SilentlyContinue
                 } while (-not $user)
                 $endTime = Get-Date
                 $replicationTime = $endTime - $startTime
                 Write-Host "Replicated on $DC in $($replicationTime.TotalSeconds) seconds"
             } catch {
-                Write-Error "Error checking replication on $DC: $_"
+                Write-Error "Error checking replication on $DC : $_"
             }
         }
     }
