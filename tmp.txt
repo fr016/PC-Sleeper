@@ -1,44 +1,26 @@
-function Test-ADReplicationConvergence {
+function Measure-ADReplicationTime {
     <#
     .SYNOPSIS
-    Measures the replication latency of an Active Directory object from the PDC to all domain controllers.
+    Measures the replication time of an Active Directory object from the Primary Domain Controller (PDC) to a specified Domain Controller (DC).
 
     .DESCRIPTION
-    This function creates a temporary, disabled user object with a randomly generated name indicating it's for an AD convergence test in a specified Organizational Unit (OU) or, by default, in the "Users" container of the target domain. It measures the time taken for each domain controller to replicate this object and then deletes the user without confirmation.
+    This function identifies the PDC of the specified domain, creates a temporary, disabled user object on the PDC, and measures the time taken for this object to replicate to a specified DC. After measurement, the temporary user object is removed.
 
     .PARAMETER DomainFQDN
     Fully Qualified Domain Name (FQDN) of the target domain. For example: "example.com".
 
-    .PARAMETER OU
-    Distinguished Name (DN) of the Organizational Unit where the temporary object will be created. For example: "OU=Test,DC=example,DC=com". If not specified, the default "Users" container of the target domain will be used.
-
-    .PARAMETER MaxWaitTime
-    Maximum time (in seconds) to wait for replication before timing out. Default is 600 seconds (10 minutes).
-
-    .PARAMETER InitialInterval
-    Initial wait time (in seconds) between replication checks. Default is 5 seconds.
-
-    .PARAMETER MaxInterval
-    Maximum wait time (in seconds) between replication checks. Default is 30 seconds.
+    .PARAMETER TargetDC
+    The hostname of the Domain Controller to which replication time will be measured.
 
     .EXAMPLE
-    Test-ADReplicationConvergence -DomainFQDN "example.com" -OU "OU=Test,DC=example,DC=com" -MaxWaitTime 900 -InitialInterval 10 -MaxInterval 60
+    Measure-ADReplicationTime -DomainFQDN "example.com" -TargetDC "DC2.example.com"
     #>
     param (
         [Parameter(Mandatory = $true)]
         [string]$DomainFQDN,
 
-        [Parameter(Mandatory = $false)]
-        [string]$OU,
-
-        [Parameter(Mandatory = $false)]
-        [int]$MaxWaitTime = 600,
-
-        [Parameter(Mandatory = $false)]
-        [int]$InitialInterval = 5,
-
-        [Parameter(Mandatory = $false)]
-        [int]$MaxInterval = 30
+        [Parameter(Mandatory = $true)]
+        [string]$TargetDC
     )
 
     begin {
@@ -48,15 +30,10 @@ function Test-ADReplicationConvergence {
 
             # Retrieve the PDC of the target domain
             $PDC = (Get-ADDomain -Server $DomainFQDN).PDCEmulator
-            Write-Host "Detected PDC: $PDC"
+            Write-Host "PDC detected: $PDC"
 
-            # If OU is not specified, use the default "Users" container of the target domain
-            if (-not $OU) {
-                $OU = (Get-ADDomain -Server $PDC).UsersContainer
-            }
-
-            # Retrieve the list of all domain controllers in the target domain
-            $DCs = Get-ADDomainController -Filter * -Server $PDC | Select-Object -ExpandProperty HostName
+            # Retrieve the default Users container of the target domain
+            $UsersContainer = (Get-ADDomain -Server $PDC).UsersContainer
 
             # Generate a unique name for the temporary user
             $guid = [guid]::NewGuid().ToString("N").Substring(0, 8)
@@ -64,7 +41,7 @@ function Test-ADReplicationConvergence {
             $samAccountName = $tempUser.Substring(0, [Math]::Min(20, $tempUser.Length))
 
             # Create the disabled user on the PDC
-            New-ADUser -Name $tempUser -SamAccountName $samAccountName -Path $OU -Enabled $false -Server $PDC
+            New-ADUser -Name $tempUser -SamAccountName $samAccountName -Path $UsersContainer -Enabled $false -Server $PDC
             Write-Host "Temporary user '$tempUser' created and disabled on $PDC at $(Get-Date)"
         } catch {
             Write-Error "Initialization error: $_"
@@ -73,28 +50,17 @@ function Test-ADReplicationConvergence {
     }
 
     process {
-        foreach ($DC in $DCs) {
-            try {
-                $startTime = Get-Date
-                $currentInterval = $InitialInterval
-                do {
-                    Start-Sleep -Seconds $currentInterval
-                    $user = Get-ADUser -Identity $samAccountName -Server $DC -ErrorAction SilentlyContinue
-                    if (-not $user) {
-                        $currentInterval = [Math]::Min($currentInterval * 2, $MaxInterval)
-                    }
-                } while (-not $user -and ((Get-Date) - $startTime).TotalSeconds -lt $MaxWaitTime)
-
-                if ($user) {
-                    $endTime = Get-Date
-                    $replicationTime = $endTime - $startTime
-                    Write-Host "Replicated on $DC in $($replicationTime.TotalSeconds) seconds"
-                } else {
-                    Write-Error "Replication to $DC did not occur within the allotted time of $MaxWaitTime seconds"
-                }
-            } catch {
-                Write-Error "Error checking replication on $DC: $_"
-            }
+        try {
+            $startTime = Get-Date
+            do {
+                Start-Sleep -Seconds 10
+                $user = Get-ADUser -Identity $samAccountName -Server $TargetDC -ErrorAction SilentlyContinue
+            } while (-not $user)
+            $endTime = Get-Date
+            $replicationTime = $endTime - $startTime
+            Write-Host "Replicated on $TargetDC in $($replicationTime.TotalSeconds) seconds"
+        } catch {
+            Write-Error "Error checking replication on $TargetDC: $_"
         }
     }
 
@@ -109,8 +75,5 @@ function Test-ADReplicationConvergence {
     }
 }
 
-# Example usage with the target domain's FQDN and default OU
-Test-ADReplicationConvergence -DomainFQDN "example.com"
-
-# Example usage with the target domain's FQDN, specific OU, and custom timing parameters
-Test-ADReplicationConvergence -DomainFQDN "example.com" -OU "OU=Test,DC=example,DC=com" -MaxWaitTime 900 -InitialInterval 10 -MaxInterval 60
+# Example usage
+Measure-ADReplicationTime -DomainFQDN "example.com" -TargetDC "DC2.example.com"
