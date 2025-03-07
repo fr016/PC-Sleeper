@@ -1,50 +1,39 @@
 function Measure-ADReplicationTime {
-    <#
-    .SYNOPSIS
-    Measures the replication time of an Active Directory object from the Primary Domain Controller (PDC) to a specified Domain Controller (DC).
-
-    .DESCRIPTION
-    This function identifies the PDC of the specified domain, creates a temporary, disabled user object on the PDC, and measures the time taken for this object to replicate to a specified DC. After measurement, the temporary user object is removed.
-
-    .PARAMETER DomainFQDN
-    Fully Qualified Domain Name (FQDN) of the target domain. For example: "example.com".
-
-    .PARAMETER TargetDC
-    The hostname of the Domain Controller to which replication time will be measured.
-
-    .EXAMPLE
-    Measure-ADReplicationTime -DomainFQDN "example.com" -TargetDC "DC2.example.com"
-    #>
     param (
         [Parameter(Mandatory = $true)]
         [string]$DomainFQDN,
 
         [Parameter(Mandatory = $true)]
-        [string]$TargetDC
+        [string]$TargetDC,
+
+        [Parameter(Mandatory = $false)]
+        [int]$MaxWaitTime = 600,  # Temps maximal d'attente en secondes (10 minutes par défaut)
+        [Parameter(Mandatory = $false)]
+        [int]$CheckInterval = 10  # Intervalle entre les vérifications en secondes
     )
 
     begin {
         try {
-            # Import the Active Directory module
+            # Importer le module Active Directory
             Import-Module ActiveDirectory -ErrorAction Stop
 
-            # Retrieve the PDC of the target domain
+            # Récupérer le PDC du domaine cible
             $PDC = (Get-ADDomain -Server $DomainFQDN).PDCEmulator
-            Write-Host "PDC detected: $PDC"
+            Write-Host "PDC détecté : $PDC"
 
-            # Retrieve the default Users container of the target domain
+            # Récupérer le conteneur "Users" par défaut du domaine cible
             $UsersContainer = (Get-ADDomain -Server $PDC).UsersContainer
 
-            # Generate a unique name for the temporary user
+            # Générer un nom unique pour l'utilisateur temporaire
             $guid = [guid]::NewGuid().ToString("N").Substring(0, 8)
             $tempUser = "ADCTest_$guid"
             $samAccountName = $tempUser.Substring(0, [Math]::Min(20, $tempUser.Length))
 
-            # Create the disabled user on the PDC
+            # Créer l'utilisateur désactivé sur le PDC
             New-ADUser -Name $tempUser -SamAccountName $samAccountName -Path $UsersContainer -Enabled $false -Server $PDC
-            Write-Host "Temporary user '$tempUser' created and disabled on $PDC at $(Get-Date)"
+            Write-Host "Utilisateur temporaire '$tempUser' créé et désactivé sur $PDC à $(Get-Date)"
         } catch {
-            Write-Error "Initialization error: $_"
+            Write-Error "Erreur lors de l'initialisation : $_"
             return
         }
     }
@@ -52,28 +41,45 @@ function Measure-ADReplicationTime {
     process {
         try {
             $startTime = Get-Date
+            $elapsedTime = 0
+
             do {
-                Start-Sleep -Seconds 10
-                $user = Get-ADUser -Identity $samAccountName -Server $TargetDC -ErrorAction SilentlyContinue
-            } while (-not $user)
-            $endTime = Get-Date
-            $replicationTime = $endTime - $startTime
-            Write-Host "Replicated on $TargetDC in $($replicationTime.TotalSeconds) seconds"
+                Start-Sleep -Seconds $CheckInterval
+                $elapsedTime += $CheckInterval
+
+                try {
+                    $user = Get-ADUser -Identity $samAccountName -Server $TargetDC -ErrorAction Stop
+                } catch {
+                    Write-Host "Utilisateur non trouvé sur $TargetDC après $elapsedTime secondes."
+                }
+
+                if ($user) {
+                    $endTime = Get-Date
+                    $replicationTime = $endTime - $startTime
+                    Write-Host "Répliqué sur $TargetDC en $($replicationTime.TotalSeconds) secondes"
+                    break
+                }
+
+            } while ($elapsedTime -lt $MaxWaitTime)
+
+            if (-not $user) {
+                Write-Error "La réplication vers $TargetDC n'a pas eu lieu dans le temps imparti de $MaxWaitTime secondes."
+            }
         } catch {
-            Write-Error "Error checking replication on $TargetDC: $_"
+            Write-Error "Erreur lors de la vérification de la réplication sur $TargetDC : $_"
         }
     }
 
     end {
         try {
-            # Remove the temporary user without confirmation
+            # Supprimer l'utilisateur temporaire sans confirmation
             Remove-ADUser -Identity $samAccountName -Server $PDC -Confirm:$false
-            Write-Host "Temporary user '$tempUser' removed from $PDC at $(Get-Date)"
+            Write-Host "Utilisateur temporaire '$tempUser' supprimé de $PDC à $(Get-Date)"
         } catch {
-            Write-Error "Error removing temporary user: $_"
+            Write-Error "Erreur lors de la suppression de l'utilisateur temporaire : $_"
         }
     }
 }
 
-# Example usage
+# Exemple d'utilisation
 Measure-ADReplicationTime -DomainFQDN "example.com" -TargetDC "DC2.example.com"
