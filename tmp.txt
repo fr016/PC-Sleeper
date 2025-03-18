@@ -1,7 +1,5 @@
-
 param (
-    [string]$DomainControllerName = $env:COMPUTERNAME,
-    [string]$DomainFQDN = (Get-AdDomain).DNSRoot,
+    [string]$DomainFQDN = (Get-ADDomain).DNSRoot,
     [string]$LogPath = "$PSScriptRoot\ReplicationReport.log",
     [int]$ReplicationLatencyThreshold = 500
 )
@@ -15,21 +13,23 @@ function Write-Log {
     Add-Content -Path $LogPath -Value $logEntry
 }
 
-function Test-ReplicationLatency {
-    param (
-        [string]$DomainController
-    )
+function Get-ReplicationLatency {
     try {
-        Write-Log "Starting replication latency test for domain controller: $DomainController"
-        $replicationInfo = Get-ADReplicationPartnerMetadata -Target $DomainController -Scope IncomingReplication
-        $results = foreach ($partner in $replicationInfo) {
-            [pscustomobject]@{
-                SourceDC           = $partner.PartnerServer
-                LastReplication    = $partner.LastReplicationSuccess
-                LatencyInSeconds   = (New-TimeSpan -Start $partner.LastReplicationSuccess -End (Get-Date)).TotalSeconds
+        Write-Log "Starting replication latency test for all domain controllers in $DomainFQDN"
+
+        $domainControllers = Get-ADDomainController -Filter *
+
+        $results = foreach ($dc in $domainControllers) {
+            $replicationInfo = Get-ADReplicationPartnerMetadata -Target $dc.HostName -Scope IncomingReplication
+            foreach ($partner in $replicationInfo) {
+                [pscustomobject]@{
+                    DomainController  = $dc.HostName
+                    ReplicationTime   = (New-TimeSpan -Start $partner.LastReplicationSuccess -End (Get-Date)).TotalSeconds
+                }
             }
         }
-        Write-Log "Replication latency test completed for domain controller: $DomainController"
+
+        Write-Log "Replication latency test completed for all domain controllers."
         return $results
     }
     catch {
@@ -37,49 +37,29 @@ function Test-ReplicationLatency {
         throw $_
     }
     finally {
-        Write-Log "End of Test-ReplicationLatency function."
-    }
-}
-
-function Get-DeletedObjects {
-    param (
-        [string]$Domain
-    )
-    try {
-        Write-Log "Starting retrieval of deleted objects in domain: $Domain"
-        $deletedObjects = Get-ADObject -Filter 'isDeleted -eq $true' -IncludeDeletedObjects -Property *
-        Write-Log "Successfully retrieved deleted objects."
-        return $deletedObjects
-    }
-    catch {
-        Write-Log "Error retrieving deleted objects: $_"
-        throw $_
-    }
-    finally {
-        Write-Log "End of Get-DeletedObjects function."
+        Write-Log "End of Get-ReplicationLatency function."
     }
 }
 
 function Generate-ReplicationReport {
     param (
-        [string]$DomainControllerName,
         [string]$DomainFQDN,
         [int]$ReplicationLatencyThreshold
     )
+
     try {
-        Write-Log "Starting replication report generation for domain controller: $DomainControllerName"
-        $replicationResults = Test-ReplicationLatency -DomainController $DomainControllerName
+        Write-Log "Starting replication report generation for all domain controllers in $DomainFQDN"
+
+        $replicationResults = Get-ReplicationLatency
+
         Write-Log "Replication latency test completed."
-        Write-Log "Starting retrieval of deleted objects."
-        $deletedObjects = Get-DeletedObjects -Domain $DomainFQDN
-        Write-Log "Retrieval of deleted objects completed."
 
         $htmlContent = @"
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Replication and Deleted Objects Report</title>
+    <title>Replication Report</title>
     <style>
         body { font-family: Arial, sans-serif; margin: 20px; }
         h1 { color: #2F4F4F; }
@@ -91,14 +71,13 @@ function Generate-ReplicationReport {
     </style>
 </head>
 <body>
-    <h1>Replication Report for $DomainControllerName</h1>
+    <h1>Replication Report for $DomainFQDN</h1>
     <h2>Replication Test Results</h2>
     <table>
         <thead>
             <tr>
-                <th>Source Domain Controller</th>
-                <th>Last Successful Replication</th>
-                <th>Latency (seconds)</th>
+                <th>Domain Controller</th>
+                <th>Replication Time (seconds)</th>
             </tr>
         </thead>
         <tbody>
@@ -106,31 +85,11 @@ function Generate-ReplicationReport {
 
         foreach ($result in $replicationResults) {
             $alertClass = ""
-            if ($result.LatencyInSeconds -gt $ReplicationLatencyThreshold) {
+            if ($result.ReplicationTime -gt $ReplicationLatencyThreshold) {
                 $alertClass = "alert"
-                Write-Log "Alert: High replication latency detected for $($result.SourceDC) with a latency of $($result.LatencyInSeconds) seconds."
+                Write-Log "Alert: High replication latency detected for $($result.DomainController) with a latency of $($result.ReplicationTime) seconds."
             }
-            $htmlContent += "<tr class='$alertClass'><td>$($result.SourceDC)</td><td>$($result.LastReplication)</td><td>$($result.LatencyInSeconds)</td></tr>"
-        }
-
-        $htmlContent += @"
-        </tbody>
-    </table>
-    <h2>List of Deleted Objects</h2>
-    <table>
-        <thead>
-            <tr>
-                <th>Name</th>
-                <th>Object Type</th>
-                <th>Deletion Date</th>
-                <th>Last Known Location</th>
-            </tr>
-        </thead>
-        <tbody>
-"@
-
-        foreach ($obj in $deletedObjects) {
-            $htmlContent += "<tr><td>$($obj.Name)</td><td>$($obj.ObjectClass)</td><td>$($obj.WhenChanged)</td><td>$($obj.LastKnownParent)</td></tr>"
+            $htmlContent += "<tr class='$alertClass'><td>$($result.DomainController)</td><td>$($result.ReplicationTime)</td></tr>"
         }
 
         $htmlContent += @"
@@ -140,7 +99,7 @@ function Generate-ReplicationReport {
 </html>
 "@
 
-        $reportPath = "$PSScriptRoot\Replication_Report_$($DomainControllerName)_$(Get-Date -Format 'yyyyMMdd_HHmmss').html"
+        $reportPath = "$PSScriptRoot\Replication_Report_$(Get-Date -Format 'yyyyMMdd_HHmmss').html"
         $htmlContent | Out-File -FilePath $reportPath -Encoding UTF8
         Write-Log "HTML report generated: $reportPath"
         Start-Process $reportPath
@@ -154,4 +113,4 @@ function Generate-ReplicationReport {
     }
 }
 
-Generate-ReplicationReport -DomainControllerName $DomainControllerName -DomainFQDN $DomainFQDN -ReplicationLatencyThreshold $ReplicationLatencyThreshold
+Generate-ReplicationReport -DomainFQDN $DomainFQDN -ReplicationLatencyThreshold $ReplicationLatencyThreshold
