@@ -221,4 +221,40 @@ th { background:#f2f2f2; }
     }
 }
 
+<#
+.SYNOPSIS
+    Workflow wrapper to run AD replication latency script in parallel across multiple domains.
+
+.DESCRIPTION
+    This PowerShell 5.1-compatible workflow will run the AD latency script in parallel for multiple domains by invoking the script recursively with the -DomainFQDN parameter.
+
+.PARAMETER DomainList
+    List of domain FQDNs to test in parallel.
+#>
+
+param (
+    [string[]]$DomainList
+)
+
+workflow Invoke-ADReplicationLatencyAcrossDomains
+{
+    param ([string[]]$Domains)
+
+    foreach -parallel ($domain in $Domains)
+    {
+        InlineScript {
+            $scriptPath = "$PSScriptRoot\Test-ADReplicationLatency_WhenChanged.ps1"
+            if (Test-Path $scriptPath) {
+                powershell.exe -ExecutionPolicy Bypass -File $scriptPath -DomainFQDN $using:domain
+            } else {
+                Write-Host "Script not found at $scriptPath"
+            }
+        }
+    }
+}
+
+Invoke-ADReplicationLatencyAcrossDomains -Domains $DomainList
+
+
+
 Test-ADReplicationLatency -SimulationMode
