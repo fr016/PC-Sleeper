@@ -1,12 +1,11 @@
 <#
 .SYNOPSIS
-    Measures Active Directory replication latency between domain controllers.
+    Measures Active Directory replication latency between domain controllers using whenCreated.
 
 .DESCRIPTION
     This script creates a temporary user account on the PDC Emulator of a specified domain 
     and checks how long it takes for the account to replicate to all domain controllers.
-    It generates an HTML report showing the latency per DC and highlights values exceeding 
-    a defined threshold.
+    It compares the whenCreated timestamp on each DC to that on the PDC.
 
 .PARAMETER DomainFQDN
     The FQDN of the domain to target. Default is 'caza'.
@@ -19,7 +18,7 @@
 
 .NOTES
     Author: Indentation Man
-    Version: 1.3
+    Version: 1.5
 #>
 
 function Test-ADReplicationLatency
@@ -120,16 +119,17 @@ function Test-ADReplicationLatency
             )
         }
 
-        Write-Host "Measuring replication latency for user '$Username'..."
+        Write-Host "Measuring replication latency using whenCreated for user '$Username'..."
         $latencies = @()
         foreach ($dc in $DomainControllers)
         {
             try
             {
-                $user = Get-ADUser -Identity $Username -Server $dc -Properties whenChanged
-                $latency = $user.whenChanged - $ReferenceTime
+                $user = Get-ADUser -Identity $Username -Server $dc -Properties whenCreated
+                $latency = $user.whenCreated - $ReferenceTime
                 $seconds = [math]::Round($latency.TotalSeconds, 2)
-                Write-Host "  $dc → $seconds seconds"
+                if ($seconds -lt 0) { $seconds = 0 }
+                Write-Host "  $dc â†’ $seconds seconds"
                 $latencies += [pscustomobject]@{
                     DomainController = $dc
                     ReplicationTime = $seconds
@@ -137,7 +137,7 @@ function Test-ADReplicationLatency
             }
             catch
             {
-                Write-Host "  $dc → ERROR"
+                Write-Host "  $dc â†’ ERROR"
             }
         }
 
@@ -176,7 +176,10 @@ th { background:#f2f2f2; }
         }
 
         $html += "</table></body></html>"
-        $path = "$PSScriptRoot\\Replication_Report_$(Get-Date -Format 'yyyyMMdd_HHmmss').html"
+        $path = Join-Path $env:TMP "ADConvergence.html"
+
+        if (Test-Path $path) { Remove-Item $path -Force }
+
         $html | Out-File $path -Encoding UTF8
         Start-Process $path
     }
