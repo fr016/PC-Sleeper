@@ -18,7 +18,7 @@
 
 .NOTES
     Author: Indentation Man
-    Version: 1.5
+    Version: 1.6
 #>
 
 function Test-ADReplicationLatency
@@ -128,11 +128,11 @@ function Test-ADReplicationLatency
                 $user = Get-ADUser -Identity $Username -Server $dc -Properties whenCreated
                 $latency = $user.whenCreated - $ReferenceTime
                 $seconds = [math]::Round($latency.TotalSeconds, 2)
-                if ($seconds -lt 0) { $seconds = 0 }
-                Write-Host "  $dc â†’ $seconds seconds"
+                $value = if ($seconds -lt 1) { "< 1" } else { "$seconds" }
+                Write-Host "  $dc â†’ $value seconds"
                 $latencies += [pscustomobject]@{
                     DomainController = $dc
-                    ReplicationTime = $seconds
+                    ReplicationTime = $value
                 }
             }
             catch
@@ -165,7 +165,8 @@ th { background:#f2f2f2; }
 
         foreach ($res in $ReplicationLatencies)
         {
-            if ($res.ReplicationTime -gt $ReplicationLatencyThreshold)
+            $num = $res.ReplicationTime -as [double]
+            if ($num -gt $ReplicationLatencyThreshold)
             {
                 $html += "<tr><td>$($res.DomainController)</td><td><span style='color:red'>$($res.ReplicationTime)</span></td></tr>"
             }
@@ -212,14 +213,7 @@ th { background:#f2f2f2; }
         Generate-ReplicationReport -ReplicationLatencies $latencies -ReplicationLatencyThreshold $ReplicationLatencyThreshold
         Remove-TemporaryUser -Username $tempUser.SamAccountName -PDC $PDC
 
-        $avg = ($latencies.ReplicationTime | Measure-Object -Average).Average
-        $max = ($latencies.ReplicationTime | Measure-Object -Maximum).Maximum
-        $countExceeded = ($latencies | Where-Object { $_.ReplicationTime -gt $ReplicationLatencyThreshold }).Count
-
-        Write-Host "`nReplication Latency Summary:"
-        Write-Host "  Average latency : $([math]::Round($avg, 2)) seconds"
-        Write-Host "  Maximum latency : $([math]::Round($max, 2)) seconds"
-        Write-Host "  DCs above threshold ($ReplicationLatencyThreshold s) : $countExceeded`n"
+        Write-Host "`nReplication latency test completed.`n"
     }
     catch
     {
