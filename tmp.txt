@@ -1,185 +1,273 @@
 <#
 .SYNOPSIS
-    Mesure le temps de réplication de la création d'un utilisateur sur les contrôleurs de domaine.
+    Measures Active Directory replication latency between domain controllers.
+
 .DESCRIPTION
-    Ce script crée un utilisateur temporaire désactivé sur le contrôleur de domaine principal (PDC),
-    attend un certain temps pour permettre la réplication, puis mesure le temps de réplication en
-    comparant les attributs 'whenCreated' et 'whenChanged' de l'utilisateur sur chaque contrôleur de domaine.
-.PARAMETER Domain
-    Le nom du domaine Active Directory à tester.
-.PARAMETER WaitTime
-    Le temps d'attente en secondes pour permettre la réplication avant de vérifier les contrôleurs de domaine.
-    Par défaut, 30 secondes.
+    This script creates a temporary user account on the PDC Emulator and checks how long 
+    it takes for the account to replicate to all domain controllers in the domain. 
+    It generates an HTML report showing the latency per DC and highlights values that 
+    exceed a specified threshold.
+
+.PARAMETER ReplicationLatencyThreshold
+    Optional. Latency threshold (in seconds) used to highlight replication delays in red.
+    Defaults to 500 seconds.
+
+.PARAMETER SimulationMode
+    If specified, no actual changes are made to Active Directory. 
+    The script simulates replication latency and generates mock data.
+
 .EXAMPLE
-    .\Mesure-ReplicationTime.ps1 -Domain "votre_domaine.local" -WaitTime 60
+    Test-ADReplicationLatency
+
+.EXAMPLE
+    Test-ADReplicationLatency -SimulationMode
+
+.EXAMPLE
+    Test-ADReplicationLatency -ReplicationLatencyThreshold 100
+
 .NOTES
-    Assurez-vous d'exécuter ce script avec des privilèges suffisants pour créer et supprimer des utilisateurs
-    dans Active Directory.
+    Author: Indentation Man  
+    Version: 1.1  
+    Requires: ActiveDirectory module
+
+.LINK
+    https://docs.microsoft.com/en-us/powershell/module/addsadministration/
 #>
 
-param (
-    [Parameter(Mandatory = $true, HelpMessage = "Nom du domaine Active Directory à tester.")]
-    [string]$Domain,
-
-    [Parameter(Mandatory = $false, HelpMessage = "Temps d'attente en secondes pour permettre la réplication.")]
-    [int]$WaitTime = 30
-)
-
-# Fonction pour générer un mot de passe aléatoire
-function New-RandomPassword {
+function Test-ADReplicationLatency
+{
     [CmdletBinding()]
     param (
-        [Parameter(Mandatory = $true, HelpMessage = "Longueur du mot de passe à générer.")]
-        [int]$Length
+        [int]$ReplicationLatencyThreshold = 500,
+        [switch]$SimulationMode
     )
 
-    Write-Verbose "Génération d'un mot de passe aléatoire de longueur $Length."
+    function Get-DomainControllers
+    {
+        if ($SimulationMode)
+        {
+            return @("DC1", "DC2", "DC3")
+        }
 
-    $CharSet = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()_+-=[]{}|;:,.<>?'.ToCharArray()
-    $Password = -join ((1..$Length) | ForEach-Object { $CharSet | Get-Random })
-
-    Write-Verbose "Mot de passe généré : $Password"
-
-    return $Password
-}
-
-# Fonction pour créer un utilisateur temporaire désactivé sur le PDC
-function New-TemporaryUser {
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory = $true, HelpMessage = "Nom d'utilisateur à créer.")]
-        [string]$Username,
-
-        [Parameter(Mandatory = $true, HelpMessage = "Nom du domaine Active Directory.")]
-        [string]$Domain
-    )
-
-    Write-Verbose "Création de l'utilisateur temporaire $Username sur le PDC du domaine $Domain."
-
-    try {
-        $PDC = (Get-ADDomainController -DomainName $Domain -Discover -Service PrimaryDC).Hostname
-        Write-Verbose "PDC trouvé : $PDC"
-
-        $Password = New-RandomPassword -Length 12
-        $SecurePassword = ConvertTo-SecureString -String $Password -AsPlainText -Force
-
-        New-ADUser -Name $Username `
-                   -AccountPassword $SecurePassword `
-                   -Enabled $false `
-                   -Path "CN=Users,DC=$($Domain -replace '\.', ',DC=')" `
-                   -Server $PDC
-
-        Write-Verbose "Utilisateur $Username créé avec succès sur $PDC."
-    } catch {
-        Write-Error "Erreur lors de la création de l'utilisateur : $_"
-    }
-}
-
-# Fonction pour récupérer la liste des contrôleurs de domaine du domaine
-function Get-DomainControllers {
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory = $true, HelpMessage = "Nom du domaine Active Directory.")]
-        [string]$Domain
-    )
-
-    Write-Verbose "Récupération de la liste des contrôleurs de domaine pour le domaine $Domain."
-
-    try {
-        $DCs = Get-ADDomainController -Filter * -Server $Domain
-        Write-Verbose "Contrôleurs de domaine trouvés : $($DCs | ForEach-Object { $_.Hostname } -join ', ')"
-        return $DCs
-    } catch {
-        Write-Error "Erreur lors de la récupération des contrôleurs de domaine : $_"
-    }
-}
-
-# Fonction pour récupérer les temps de réplication de l'utilisateur sur chaque DC
-function Get-UserReplicationTimes {
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory = $true, HelpMessage = "Nom d'utilisateur à vérifier.")]
-        [string]$Username,
-
-        [Parameter(Mandatory = $true, HelpMessage = "Liste des contrôleurs de domaine.")]
-        [array]$DCs
-    )
-
-    Write-Verbose "Récupération des temps de réplication pour l'utilisateur $Username."
-
-    $ReplicationTimes = @()
-
-    foreach ($DC in $DCs) {
-        try {
-            Write-Verbose "Connexion à $($DC.Hostname) pour récupérer les attributs de l'utilisateur."
-
-            $User = Get-ADUser -Identity $Username -Server $DC.Hostname -Properties whenCreated, whenChanged
-
-            $ReplicationTime = [pscustomobject]@{
-                DC              = $DC.Hostname
-                WhenCreated     = $User.whenCreated
-                WhenChanged     = $User.whenChanged
-                ReplicationTime = $null
-            }
-
-            if ($User.whenCreated -ne $User.whenChanged) {
-                $ReplicationTime.ReplicationTime = $User.whenChanged - $User.whenCreated
-            }
-
-            $ReplicationTimes += $ReplicationTime
-
-            Write-Verbose "Attributs récupérés sur $($DC.Hostname) : WhenCreated = $($User.whenCreated), WhenChanged = $($User.whenChanged)"
-        } catch {
-            Write-Error "Erreur lors de la récupération des attributs sur $($DC.Hostname) : $_"
+        try
+        {
+            return Get-ADDomainController -Filter * | Select-Object -ExpandProperty HostName
+        }
+        catch
+        {
+            throw $_
         }
     }
 
-    return $ReplicationTimes
-}
+    function Create-TemporaryUser
+    {
+        param (
+            [string]$PDC
+        )
 
-# Fonction pour supprimer l'utilisateur temporaire
-function Remove-TemporaryUser {
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory = $true, HelpMessage = "Nom d'utilisateur à supprimer.")]
-        [string]$Username,
+        $username = "ADConvergence"
 
-        [Parameter(Mandatory = $true, HelpMessage = "Nom du domaine Active Directory.")]
-        [string]$Domain
-    )
+        if ($SimulationMode)
+        {
+            return [pscustomobject]@{
+                SamAccountName = $username
+            }
+        }
 
-    Write-Verbose "Suppression de l'utilisateur temporaire $Username du domaine $Domain."
+        try
+        {
+            if (Get-ADUser -Filter "SamAccountName -eq '$username'" -Server $PDC -ErrorAction SilentlyContinue)
+            {
+                Remove-ADUser -Identity $username -Server $PDC -Confirm:$false
+            }
 
-    try {
-        Remove-ADUser -Identity $Username -Server $Domain -Confirm:$false
-        Write-Verbose "Utilisateur $Username supprimé avec succès."
-    } catch {
-        Write-Error "Erreur lors de la suppression de l'utilisateur : $_"
+            $rand = -join ((65..90) + (97..122) + (48..57) + 33,35,36,64 | Get-Random -Count 12 | ForEach-Object { [char]$_ })
+            $password = ConvertTo-SecureString $rand -AsPlainText -Force
+            $ou = "CN=Users,$((Get-ADDomain).DistinguishedName)"
+
+            return New-ADUser -Name $username -SamAccountName $username -AccountPassword $password -Enabled $true -Path $ou -Server $PDC -PassThru
+        }
+        catch
+        {
+            throw $_
+        }
+    }
+
+    function Wait-Until-Replicated
+    {
+        param (
+            [string]$Username,
+            [array]$DomainControllers,
+            [int]$TimeoutSeconds = 60
+        )
+
+        if ($SimulationMode)
+        {
+            Start-Sleep -Seconds 2
+            return
+        }
+
+        $start = Get-Date
+
+        do
+        {
+            $found = $true
+
+            foreach ($dc in $DomainControllers)
+            {
+                try
+                {
+                    $null = Get-ADUser -Identity $Username -Server $dc -ErrorAction Stop
+                }
+                catch
+                {
+                    $found = $false
+                    break
+                }
+            }
+
+            if ($found) { break }
+
+            Start-Sleep -Seconds 2
+        }
+        while ((Get-Date) - $start -lt [TimeSpan]::FromSeconds($TimeoutSeconds))
+    }
+
+    function Measure-ReplicationLatency
+    {
+        param (
+            [string]$Username,
+            [datetime]$ReferenceTime,
+            [array]$DomainControllers
+        )
+
+        if ($SimulationMode)
+        {
+            return @(
+                [pscustomobject]@{ DomainController = "DC1"; ReplicationTime = 12.5 },
+                [pscustomobject]@{ DomainController = "DC2"; ReplicationTime = 23.1 },
+                [pscustomobject]@{ DomainController = "DC3"; ReplicationTime = 501.8 }
+            )
+        }
+
+        $latencies = @()
+
+        foreach ($dc in $DomainControllers)
+        {
+            try
+            {
+                $user = Get-ADUser -Identity $Username -Server $dc -Properties whenChanged
+                $latency = $user.whenChanged - $ReferenceTime
+
+                $latencies += [pscustomobject]@{
+                    DomainController = $dc
+                    ReplicationTime  = [math]::Round($latency.TotalSeconds, 2)
+                }
+            }
+            catch {}
+        }
+
+        return $latencies
+    }
+
+    function Generate-ReplicationReport
+    {
+        param (
+            [array]$ReplicationLatencies,
+            [int]$ReplicationLatencyThreshold
+        )
+
+        $html = @"
+<html>
+<head>
+    <title>Replication Report</title>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; }
+        table {
+            margin: auto;
+            border-collapse: collapse;
+            width: 60%;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+        th, td {
+            border: 1px solid #ccc;
+            padding: 10px;
+            text-align: center;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+    </style>
+</head>
+<body>
+    <h2>Active Directory Latency Replication Report</h2>
+    <table>
+        <tr><th>Domain Controller</th><th>Latency (seconds)</th></tr>
+"@
+
+        foreach ($res in $ReplicationLatencies)
+        {
+            if ($res.ReplicationTime -gt $ReplicationLatencyThreshold)
+            {
+                $html += "<tr><td>$($res.DomainController)</td><td><span style='color:red'>$($res.ReplicationTime)</span></td></tr>"
+            }
+            else
+            {
+                $html += "<tr><td>$($res.DomainController)</td><td>$($res.ReplicationTime)</td></tr>"
+            }
+        }
+
+        $html += @"
+    </table>
+</body>
+</html>
+"@
+
+        $path = "$PSScriptRoot\\Replication_Report_$(Get-Date -Format 'yyyyMMdd_HHmmss').html"
+        $html | Out-File $path -Encoding UTF8
+        Start-Process $path
+    }
+
+    function Remove-TemporaryUser
+    {
+        param ([string]$Username, [string]$PDC)
+
+        if ($SimulationMode) { return }
+
+        try
+        {
+            Remove-ADUser -Identity $Username -Server $PDC -Confirm:$false
+        }
+        catch {}
+    }
+
+    try
+    {
+        $PDC = if ($SimulationMode) { "PDC-SIMUL" } else { (Get-ADDomain).PDCEmulator }
+        $dcs = Get-DomainControllers
+        $tempUser = Create-TemporaryUser -PDC $PDC
+
+        $refTime = if ($SimulationMode) { Get-Date } else { (Get-ADUser -Identity $tempUser.SamAccountName -Server $PDC -Properties whenCreated).whenCreated }
+
+        Wait-Until-Replicated -Username $tempUser.SamAccountName -DomainControllers $dcs
+        $latencies = Measure-ReplicationLatency -Username $tempUser.SamAccountName -ReferenceTime $refTime -DomainControllers $dcs
+
+        Generate-ReplicationReport -ReplicationLatencies $latencies -ReplicationLatencyThreshold $ReplicationLatencyThreshold
+        Remove-TemporaryUser -Username $tempUser.SamAccountName -PDC $PDC
+
+        $avg = ($latencies.ReplicationTime | Measure-Object -Average).Average
+        $max = ($latencies.ReplicationTime | Measure-Object -Maximum).Maximum
+        $countExceeded = ($latencies | Where-Object { $_.ReplicationTime -gt $ReplicationLatencyThreshold }).Count
+
+        Write-Host "`nReplication Latency Summary:"
+        Write-Host "  Average latency : $([math]::Round($avg, 2)) seconds"
+        Write-Host "  Maximum latency : $([math]::Round($max, 2)) seconds"
+        Write-Host "  DCs above threshold ($ReplicationLatencyThreshold s) : $countExceeded`n"
+    }
+    catch
+    {
+        Write-Host "An error occurred: $_"
     }
 }
 
-# Script principal
-$Username = "TempUserForReplicationTest"
-
-try {
-    # Créer l'utilisateur temporaire sur le PDC
-    New-TemporaryUser -Username $Username -Domain $Domain
-
-    # Attendre le temps spécifié pour permettre la réplication
-    Write-Verbose "Attente de $WaitTime secondes pour permettre la réplication."
-    Start-Sleep -Seconds $WaitTime
-
-    # Récupérer la liste des contrôleurs de domaine
-    $DCs = Get-DomainControllers -Domain $Domain
-
-    # Récupérer les temps de réplication
-    $ReplicationResults = Get-UserReplicationTimes -Username $Username -DCs $DCs
-
-    # Afficher les résultats
-    $ReplicationResults | Format-Table -AutoSize
-}
-finally {
-    # Supprimer l'utilisateur temporaire
-    Remove-TemporaryUser -Username $Username -Domain $Domain
-}
-
+Test-ADReplicationLatency -SimulationMode
