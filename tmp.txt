@@ -17,21 +17,9 @@
 .PARAMETER SimulationMode
     Optional. If specified, the script simulates data without any real interaction with AD.
 
-.EXAMPLE
-    Test-ADReplicationLatency
-
-.EXAMPLE
-    Test-ADReplicationLatency -DomainFQDN corp.local
-
-.EXAMPLE
-    Test-ADReplicationLatency -ReplicationLatencyThreshold 100 -SimulationMode
-
 .NOTES
     Author: Indentation Man
-    Version: 1.2
-
-.LINK
-    https://docs.microsoft.com/en-us/powershell/module/addsadministration/
+    Version: 1.3
 #>
 
 function Test-ADReplicationLatency
@@ -47,9 +35,11 @@ function Test-ADReplicationLatency
     {
         if ($SimulationMode)
         {
+            Write-Host "[SIMULATION] Returning mock domain controllers..."
             return @("DC1", "DC2", "DC3")
         }
 
+        Write-Host "Querying domain controllers in domain '$DomainFQDN'..."
         return Get-ADDomainController -Server $DomainFQDN -Filter * | Select-Object -ExpandProperty HostName
     }
 
@@ -61,11 +51,15 @@ function Test-ADReplicationLatency
 
         if ($SimulationMode)
         {
+            Write-Host "[SIMULATION] Creating mock user '$username'"
             return [pscustomobject]@{ SamAccountName = $username }
         }
 
-        if (Get-ADUser -Server $DomainFQDN -Filter "SamAccountName -eq '$username'" -Server $PDC -ErrorAction SilentlyContinue)
+        Write-Host "Creating temporary user '$username' on PDC: $PDC..."
+
+        if (Get-ADUser -Filter "SamAccountName -eq '$username'" -Server $PDC -ErrorAction SilentlyContinue)
         {
+            Write-Host "User '$username' already exists. Removing it..."
             Remove-ADUser -Identity $username -Server $PDC -Confirm:$false
         }
 
@@ -82,10 +76,12 @@ function Test-ADReplicationLatency
 
         if ($SimulationMode)
         {
+            Write-Host "[SIMULATION] Simulating replication delay..."
             Start-Sleep -Seconds 2
             return
         }
 
+        Write-Host "Waiting for user '$Username' to replicate to all domain controllers..."
         $start = Get-Date
 
         do
@@ -116,6 +112,7 @@ function Test-ADReplicationLatency
 
         if ($SimulationMode)
         {
+            Write-Host "[SIMULATION] Generating mock replication latencies..."
             return @(
                 [pscustomobject]@{ DomainController = "DC1"; ReplicationTime = 12.5 },
                 [pscustomobject]@{ DomainController = "DC2"; ReplicationTime = 23.1 },
@@ -123,6 +120,7 @@ function Test-ADReplicationLatency
             )
         }
 
+        Write-Host "Measuring replication latency for user '$Username'..."
         $latencies = @()
         foreach ($dc in $DomainControllers)
         {
@@ -130,12 +128,17 @@ function Test-ADReplicationLatency
             {
                 $user = Get-ADUser -Identity $Username -Server $dc -Properties whenChanged
                 $latency = $user.whenChanged - $ReferenceTime
+                $seconds = [math]::Round($latency.TotalSeconds, 2)
+                Write-Host "  $dc → $seconds seconds"
                 $latencies += [pscustomobject]@{
                     DomainController = $dc
-                    ReplicationTime = [math]::Round($latency.TotalSeconds, 2)
+                    ReplicationTime = $seconds
                 }
             }
-            catch {}
+            catch
+            {
+                Write-Host "  $dc → ERROR"
+            }
         }
 
         return $latencies
@@ -144,6 +147,8 @@ function Test-ADReplicationLatency
     function Generate-ReplicationReport
     {
         param ([array]$ReplicationLatencies, [int]$ReplicationLatencyThreshold)
+
+        Write-Host "Generating HTML report..."
 
         $html = @"
 <html><head><title>Replication Report</title>
@@ -184,6 +189,7 @@ th { background:#f2f2f2; }
 
         try
         {
+            Write-Host "Removing temporary user '$Username'..."
             Remove-ADUser -Identity $Username -Server $PDC -Confirm:$false
         }
         catch {}
@@ -191,6 +197,8 @@ th { background:#f2f2f2; }
 
     try
     {
+        Write-Host "Starting Active Directory replication latency test..."
+
         $PDC = if ($SimulationMode) { "PDC-SIMUL" } else { (Get-ADDomain -Server $DomainFQDN).PDCEmulator }
         $dcs = Get-DomainControllers
         $tempUser = Create-TemporaryUser -PDC $PDC
