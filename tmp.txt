@@ -1,1 +1,68 @@
 
+function Convert-CsvToHtml {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$CsvPath
+    )
+
+    if (-not (Test-Path $CsvPath)) {
+        Write-Error "Le fichier CSV '$CsvPath' n'existe pas."
+        return
+    }
+
+    try {
+        $csvContent = Import-Csv -Path $CsvPath -Delimiter ';'
+    } catch {
+        Write-Error "Erreur lors de l'importation du fichier CSV : $_"
+        return
+    }
+
+    $html = @()
+    $html += '<!DOCTYPE html>'
+    $html += '<html>'
+    $html += '<head>'
+    $html += '    <meta charset="UTF-8">'
+    $html += '    <title>Tableau CSV</title>'
+    $html += '    <style>'
+    $html += '        body { font-family: Arial, sans-serif; }'
+    $html += '        h1 { text-align: center; }'
+    $html += '        table { border-collapse: collapse; width: 100%; }'
+    $html += '        th, td { border: 1px solid black; padding: 8px; text-align: left; }'
+    $html += '        th { background-color: #f2f2f2; }'
+    $html += '    </style>'
+    $html += '</head>'
+    $html += '<body>'
+    $html += '    <h1>subnets</h1>'
+    $html += '    <table>'
+
+    $headers = $csvContent[0].PSObject.Properties.Name
+    $html += '        <thead><tr>'
+    foreach ($header in $headers) {
+        $html += "            <th>$header</th>"
+    }
+    $html += '        </tr></thead>'
+
+    $html += '        <tbody>'
+    foreach ($row in $csvContent) {
+        $html += '            <tr>'
+        foreach ($header in $headers) {
+            $value = $row.$header
+            $html += "                <td>$value</td>"
+        }
+        $html += '            </tr>'
+    }
+    $html += '        </tbody>'
+
+    $html += '    </table>'
+    $html += '</body>'
+    $html += '</html>'
+
+    $tempFile = Join-Path -Path $env:TEMP -ChildPath ('csv_' + (Get-Random) + '.html')
+
+    try {
+        $html -join "`r`n" | Set-Content -Path $tempFile -Encoding UTF8
+        Start-Process $tempFile
+    } catch {
+        Write-Error "Erreur lors de l'écriture ou de l'ouverture du fichier HTML : $_"
+    }
+}
