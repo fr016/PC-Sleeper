@@ -1,1 +1,52 @@
+# Paramètres
+$CsvPath = "C:\Path\To\changes.csv"
+$CalendarName = "Changement"
 
+# Ouverture de la session Outlook
+$Outlook = New-Object -ComObject Outlook.Application
+$Namespace = $Outlook.GetNamespace("MAPI")
+
+# Boucle sur les entrées CSV
+Import-Csv -Path $CsvPath | ForEach-Object {
+    $Sujet        = $_.Sujet
+    $Debut        = Get-Date $_.Début
+    $Fin          = Get-Date $_.Fin
+    $Responsable  = $_.Responsable
+    $Description  = $_.Description
+
+    # Récupération du destinataire (ex : dans le carnet d'adresses global)
+    try {
+        $Recipient = $Namespace.CreateRecipient($Responsable)
+        $Recipient.Resolve()
+
+        if ($Recipient.Resolved) {
+            $Calendar = $Namespace.GetSharedDefaultFolder($Recipient, 9) # 9 = olFolderCalendar
+            $ChangementCalendar = $Calendar.Folders | Where-Object { $_.Name -eq $CalendarName }
+
+            if (-not $ChangementCalendar) {
+                Write-Warning "Calendrier '$CalendarName' non trouvé pour $Responsable. Utilisation du calendrier par défaut."
+                $ChangementCalendar = $Calendar
+            }
+
+            # Création de la réunion
+            $Appointment = $Outlook.CreateItem(1) # 1 = olAppointmentItem
+            $Appointment.Subject = $Sujet
+            $Appointment.Start = $Debut
+            $Appointment.End = $Fin
+            $Appointment.Body = $Description
+            $Appointment.Location = "Voir détails"
+            $Appointment.BusyStatus = 2 # 2 = Busy
+            $Appointment.ReminderSet = $true
+            $Appointment.ReminderMinutesBeforeStart = 15
+            $Appointment.Save() # Ne pas envoyer tout de suite
+
+            Write-Host "Réunion créée pour $Responsable : $Sujet ($Debut - $Fin)"
+        }
+        else {
+            Write-Warning "Responsable non résolu : $Responsable"
+        }
+    }
+    catch {
+        Write-Error "Erreur lors du traitement de $Responsable : $_"
+    }
+}
