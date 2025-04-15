@@ -1,2 +1,84 @@
-$outlook = New-Object -ComObject Outlook.Application
-$outlook.Session.Accounts | Select DisplayName
+function Get-Log {
+    [CmdletBinding()]
+    param (
+        [string]$Message,
+        [ValidateSet("INFO", "ERROR", "WARN")]
+        [string]$Level = "INFO"
+    )
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    Write-Output "$timestamp [$Level] $Message"
+}
+
+function Get-VisibleSharedCalendarEvents {
+    <#
+    .SYNOPSIS
+    Reads a calendar from a shared mailbox already mounted in Outlook.
+
+    .DESCRIPTION
+    Finds the shared mailbox by display name in visible stores (auto-mount) and extracts calendar events.
+
+    .PARAMETER MailboxDisplayName
+    The display name of the shared mailbox as shown in Outlook (e.g., "IT-Changements").
+
+    .PARAMETER DaysAhead
+    How many days ahead to look for events.
+
+    .EXAMPLE
+    Get-VisibleSharedCalendarEvents -MailboxDisplayName "IT-Changements" -DaysAhead 7
+    #>
+
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        [string]$MailboxDisplayName,
+
+        [int]$DaysAhead = 7
+    )
+
+    try {
+        Get-Log -Message "Connecting to Outlook (mounted mailboxes only)..." -Level "INFO"
+        $outlook = New-Object -ComObject Outlook.Application
+        $namespace = $outlook.GetNamespace("MAPI")
+
+        $targetStore = $namespace.Stores |
+            Where-Object { $_.DisplayName -eq $MailboxDisplayName }
+
+        if (-not $targetStore) {
+            Get-Log -Message "Mailbox '$MailboxDisplayName' not found among visible Outlook stores." -Level "ERROR"
+            return
+        }
+
+        $rootFolder = $targetStore.GetRootFolder()
+        $calendarFolder = $rootFolder.Folders | Where-Object { $_.DefaultItemType -eq 1 }
+
+        if (-not $calendarFolder) {
+            Get-Log -Message "No calendar found for '$MailboxDisplayName'." -Level "ERROR"
+            return
+        }
+
+        $now = Get-Date
+        $end = $now.AddDays($DaysAhead)
+        $restriction = "[Start] >= '" + $now.ToString("g") + "' AND [Start] <= '" + $end.ToString("g") + "'"
+
+        $items = $calendarFolder.Items
+        $items.Sort("[Start]")
+        $items.IncludeRecurrences = $true
+        $filtered = $items.Restrict($restriction)
+
+        $results = foreach ($item in $filtered) {
+            [PSCustomObject]@{
+                Subject  = $item.Subject
+                Start    = $item.Start
+                End      = $item.End
+                Location = $item.Location
+            }
+        }
+
+        Get-Log -Message "Found $($results.Count) event(s) in '$MailboxDisplayName' calendar." -Level "INFO"
+        return $results
+    }
+    catch {
+        Get-Log -Message "Unexpected error: $_" -Level "ERROR"
+    }
+}
+Get-VisibleSharedCalendarEvents -MailboxDisplayName "IT-Changements" -DaysAhead 5
