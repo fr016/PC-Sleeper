@@ -9,59 +9,88 @@ function Get-Log {
     Write-Output "$timestamp [$Level] $Message"
 }
 
-function Get-OutlookCalendarEvents {
+function Get-SharedMailboxCalendarEvents {
     <#
     .SYNOPSIS
-    Retrieves calendar events from the default Outlook Calendar.
+    Retrieves calendar events from a shared mailbox in Outlook.
 
     .DESCRIPTION
-    Uses COM interop to connect to the local Outlook client and extract upcoming events 
-    from the default calendar folder.
+    Connects to Outlook using COM, opens the shared mailbox, and extracts events
+    from the specified calendar folder.
+
+    .PARAMETER MailboxName
+    The display name or alias of the shared mailbox (e.g., "IT-Changements").
+
+    .PARAMETER CalendarName
+    The name of the calendar (usually "Calendar" or "Changements").
 
     .PARAMETER DaysAhead
-    Number of days ahead to look for events (default is 7).
-
-    .OUTPUTS
-    List of events with subject, start time, end time, and location.
+    Number of days to look ahead for events.
 
     .EXAMPLE
-    Get-OutlookCalendarEvents -DaysAhead 3
+    Get-SharedMailboxCalendarEvents -MailboxName "IT-Changements" -CalendarName "Changements" -DaysAhead 7
     #>
 
     [CmdletBinding()]
     param (
+        [Parameter(Mandatory)]
+        [string]$MailboxName,
+
+        [string]$CalendarName = "Calendar",
+
         [int]$DaysAhead = 7
     )
 
     try {
-        Get-Log -Message "Connecting to Outlook Application..." -Level "INFO"
+        Get-Log -Message "Connecting to Outlook and mailbox '$MailboxName'..." -Level "INFO"
         $outlook = New-Object -ComObject Outlook.Application
         $namespace = $outlook.GetNamespace("MAPI")
-        $calendar = $namespace.GetDefaultFolder(9)  # olFolderCalendar
 
-        Get-Log -Message "Filtering calendar items..." -Level "INFO"
+        $recipient = $namespace.CreateRecipient($MailboxName)
+        $recipient.Resolve()
+
+        if (-not $recipient.Resolved) {
+            Get-Log -Message "Recipient '$MailboxName' could not be resolved." -Level "ERROR"
+            return
+        }
+
+        $sharedCalendar = $namespace.GetSharedDefaultFolder($recipient, 9)  # 9 = olFolderCalendar
+
+        if ($CalendarName -ne "Calendar") {
+            # Optionnel : chercher un sous-dossier spécifique
+            $subFolder = $sharedCalendar.Folders | Where-Object { $_.Name -eq $CalendarName }
+            if ($subFolder) {
+                $sharedCalendar = $subFolder
+                Get-Log -Message "Switched to subfolder '$CalendarName'." -Level "INFO"
+            } else {
+                Get-Log -Message "Subfolder '$CalendarName' not found, using main calendar." -Level "WARN"
+            }
+        }
+
         $now = Get-Date
         $end = $now.AddDays($DaysAhead)
         $restriction = "[Start] >= '" + $now.ToString("g") + "' AND [Start] <= '" + $end.ToString("g") + "'"
-        $items = $calendar.Items
+
+        $items = $sharedCalendar.Items
         $items.Sort("[Start]")
         $items.IncludeRecurrences = $true
-        $restrictedItems = $items.Restrict($restriction)
+        $filtered = $items.Restrict($restriction)
 
-        $results = foreach ($item in $restrictedItems) {
+        $results = foreach ($item in $filtered) {
             [PSCustomObject]@{
-                Subject = $item.Subject
-                Start   = $item.Start
-                End     = $item.End
+                Subject  = $item.Subject
+                Start    = $item.Start
+                End      = $item.End
                 Location = $item.Location
             }
         }
 
-        Get-Log -Message "Retrieved $($results.Count) event(s)." -Level "INFO"
+        Get-Log -Message "Retrieved $($results.Count) event(s) from shared mailbox '$MailboxName'." -Level "INFO"
         return $results
     }
     catch {
-        Get-Log -Message "Error while accessing Outlook calendar: $_" -Level "ERROR"
-        return $null
+        Get-Log -Message "Error accessing shared calendar: $_" -Level "ERROR"
     }
 }
+
+Get-SharedMailboxCalendarEvents -MailboxName "IT-Changements" -CalendarName "Changements" -DaysAhead 7
