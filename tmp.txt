@@ -1,191 +1,67 @@
-#region Logging
-
-function Write-Log {
-    <#
-    .SYNOPSIS
-        Centralized logging function with timestamp.
-    .DESCRIPTION
-        Writes informational messages with timestamp to the console.
-    .PARAMETER Message
-        The message to log.
-    .PARAMETER Level
-        The severity level (Info, Warning, Error).
-    #>
+function Get-Log {
     [CmdletBinding()]
     param (
-        [Parameter(Mandatory)][string]$Message,
-        [ValidateSet("INFO", "WARNING", "ERROR")][string]$Level = "INFO"
+        [string]$Message,
+        [ValidateSet("INFO", "ERROR", "WARN")]
+        [string]$Level = "INFO"
     )
-
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    Write-Host "[$timestamp][$Level] $Message"
+    Write-Output "$timestamp [$Level] $Message"
 }
 
-#endregion
-
-#region CSV Import
-
-function Import-ChangeCsv {
+function Get-OutlookCalendarEvents {
     <#
     .SYNOPSIS
-        Imports weekly change data from CSV.
+    Retrieves calendar events from the default Outlook Calendar.
+
     .DESCRIPTION
-        Validates and loads the change schedule from a provided CSV file.
-    .PARAMETER Path
-        Full path to the CSV file.
+    Uses COM interop to connect to the local Outlook client and extract upcoming events 
+    from the default calendar folder.
+
+    .PARAMETER DaysAhead
+    Number of days ahead to look for events (default is 7).
+
     .OUTPUTS
-        [System.Object[]] List of validated change items.
+    List of events with subject, start time, end time, and location.
+
+    .EXAMPLE
+    Get-OutlookCalendarEvents -DaysAhead 3
     #>
+
     [CmdletBinding()]
     param (
-        [Parameter(Mandatory)][string]$Path
+        [int]$DaysAhead = 7
     )
 
-    if (-not (Test-Path -Path $Path)) {
-        Write-Log -Message "CSV file not found at path: $Path" -Level "ERROR"
-        throw "CSV file missing"
-    }
-
-    $csvData = Import-Csv -Path $Path
-
-    foreach ($row in $csvData) {
-        if (-not $row.Sujet -or -not $row.Debut -or -not $row.Fin -or -not $row.Responsable) {
-            Write-Log -Message "One or more mandatory fields missing in a row. Skipping." -Level "WARNING"
-            continue
-        }
-        $row
-    }
-}
-
-#endregion
-
-#region Outlook Utilities
-
-function Get-OutlookApplication {
-    <#
-    .SYNOPSIS
-        Initializes Outlook COM object.
-    .DESCRIPTION
-        Returns the Outlook application instance, or throws if unavailable.
-    .OUTPUTS
-        [Microsoft.Office.Interop.Outlook.Application]
-    #>
     try {
-        return New-Object -ComObject Outlook.Application
-    } catch {
-        Write-Log -Message "Outlook is not available. Ensure it's installed and configured." -Level "ERROR"
-        throw
+        Get-Log -Message "Connecting to Outlook Application..." -Level "INFO"
+        $outlook = New-Object -ComObject Outlook.Application
+        $namespace = $outlook.GetNamespace("MAPI")
+        $calendar = $namespace.GetDefaultFolder(9)  # olFolderCalendar
+
+        Get-Log -Message "Filtering calendar items..." -Level "INFO"
+        $now = Get-Date
+        $end = $now.AddDays($DaysAhead)
+        $restriction = "[Start] >= '" + $now.ToString("g") + "' AND [Start] <= '" + $end.ToString("g") + "'"
+        $items = $calendar.Items
+        $items.Sort("[Start]")
+        $items.IncludeRecurrences = $true
+        $restrictedItems = $items.Restrict($restriction)
+
+        $results = foreach ($item in $restrictedItems) {
+            [PSCustomObject]@{
+                Subject = $item.Subject
+                Start   = $item.Start
+                End     = $item.End
+                Location = $item.Location
+            }
+        }
+
+        Get-Log -Message "Retrieved $($results.Count) event(s)." -Level "INFO"
+        return $results
     }
-}
-
-function Get-TargetCalendar {
-    <#
-    .SYNOPSIS
-        Gets the 'Changement' calendar folder for the responsible.
-    .DESCRIPTION
-        Attempts to find the custom calendar "Changement" for the given recipient. Defaults to standard calendar if not found.
-    .PARAMETER OutlookNamespace
-        The MAPI namespace object.
-    .PARAMETER Responsible
-        The email or name of the calendar owner.
-    .PARAMETER Fallback
-        Switch to use default calendar if "Changement" not found.
-    .OUTPUTS
-        [Microsoft.Office.Interop.Outlook.MAPIFolder]
-    #>
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory)]$OutlookNamespace,
-        [Parameter(Mandatory)][string]$Responsible,
-        [switch]$Fallback
-    )
-
-    $recipient = $OutlookNamespace.CreateRecipient($Responsible)
-    $recipient.Resolve()
-
-    if (-not $recipient.Resolved) {
-        Write-Log -Message "Could not resolve recipient: $Responsible" -Level "WARNING"
+    catch {
+        Get-Log -Message "Error while accessing Outlook calendar: $_" -Level "ERROR"
         return $null
     }
-
-    $calendarFolder = $OutlookNamespace.GetSharedDefaultFolder($recipient, 9) # olFolderCalendar
-    $target = $calendarFolder.Folders | Where-Object { $_.Name -eq "Changement" }
-
-    if (-not $target -and $Fallback) {
-        Write-Log -Message "Fallback to default calendar for $Responsible." -Level "INFO"
-        return $calendarFolder
-    }
-
-    return $target
 }
-
-function New-OutlookMeeting {
-    <#
-    .SYNOPSIS
-        Creates an Outlook meeting in the specified calendar.
-    .DESCRIPTION
-        Builds and saves (does not send) a new meeting with the specified data.
-    .PARAMETER OutlookApp
-        The Outlook application COM object.
-    .PARAMETER Calendar
-        The calendar folder where the meeting should be saved.
-    .PARAMETER Change
-        The change object containing subject, dates, etc.
-    #>
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory)]$OutlookApp,
-        [Parameter(Mandatory)]$Calendar,
-        [Parameter(Mandatory)]$Change
-    )
-
-    $appointment = $OutlookApp.CreateItem(1) # olAppointmentItem
-
-    $appointment.Subject  = $Change.Sujet
-    $appointment.Start    = [datetime]::Parse($Change.Debut)
-    $appointment.End      = [datetime]::Parse($Change.Fin)
-    $appointment.Body     = $Change.Description
-    $appointment.Location = "Voir les détails"
-    $appointment.BusyStatus = 2
-    $appointment.ReminderSet = $true
-    $appointment.ReminderMinutesBeforeStart = 15
-
-    $appointment.Move($Calendar)
-    $appointment.Save()
-
-    Write-Log -Message "Meeting created for $($Change.Responsable) — $($Change.Sujet)" -Level "INFO"
-}
-
-#endregion
-
-#region Main Entry Point
-
-function Invoke-ChangeMeetingScheduler {
-    <#
-    .SYNOPSIS
-        Main function to process change CSV and create Outlook meetings.
-    .DESCRIPTION
-        Reads a change list from CSV and creates meetings in Outlook in the correct calendar per responsible.
-    .PARAMETER CsvPath
-        Full path to the CSV file to process.
-    #>
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory)][string]$CsvPath
-    )
-
-    $outlook = Get-OutlookApplication
-    $namespace = $outlook.GetNamespace("MAPI")
-    $changes = Import-ChangeCsv -Path $CsvPath
-
-    foreach ($change in $changes) {
-        $calendar = Get-TargetCalendar -OutlookNamespace $namespace -Responsible $change.Responsable -Fallback
-        if ($calendar) {
-            New-OutlookMeeting -OutlookApp $outlook -Calendar $calendar -Change $change
-        } else {
-            Write-Log -Message "No calendar found for $($change.Responsable). Skipping." -Level "WARNING"
-        }
-    }
-}
-
-#endregion
