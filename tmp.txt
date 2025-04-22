@@ -1,84 +1,77 @@
-function Get-Log {
-    [CmdletBinding()]
-    param (
-        [string]$Message,
-        [ValidateSet("INFO", "ERROR", "WARN")]
-        [string]$Level = "INFO"
-    )
-    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    Write-Output "$timestamp [$Level] $Message"
+param(
+    [string]$CsvPath = ".\serveurs.csv",
+    [string]$DownloadFolder = ".\ScriptsTéléchargés"
+)
+
+function Initialize-DownloadFolder {
+    param([string]$Path)
+    if (-not (Test-Path $Path)) {
+        New-Item -ItemType Directory -Path $Path | Out-Null
+    }
 }
 
-function Get-VisibleSharedCalendarEvents {
-    <#
-    .SYNOPSIS
-    Reads a calendar from a shared mailbox already mounted in Outlook.
+function Get-FQDN {
+    param([string]$Hostname, [string]$Domain)
+    return "$Hostname.$Domain"
+}
 
-    .DESCRIPTION
-    Finds the shared mailbox by display name in visible stores (auto-mount) and extracts calendar events.
-
-    .PARAMETER MailboxDisplayName
-    The display name of the shared mailbox as shown in Outlook (e.g., "IT-Changements").
-
-    .PARAMETER DaysAhead
-    How many days ahead to look for events.
-
-    .EXAMPLE
-    Get-VisibleSharedCalendarEvents -MailboxDisplayName "IT-Changements" -DaysAhead 7
-    #>
-
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory)]
-        [string]$MailboxDisplayName,
-
-        [int]$DaysAhead = 7
+function Download-RemoteScript {
+    param(
+        [string]$Fqdn,
+        [string]$TaskName,
+        [string]$RemotePath,
+        [string]$LocalFolder
     )
+
+    $fileName = "$Fqdn`_$TaskName.ps1"
+    $localPath = Join-Path $LocalFolder $fileName
+
+    $content = Invoke-Command -ComputerName $Fqdn -ScriptBlock {
+        param($RemotePath)
+        if (Test-Path $RemotePath) {
+            Get-Content -Path $RemotePath -Raw
+        } else {
+            throw "Fichier introuvable : $RemotePath"
+        }
+    } -ArgumentList $RemotePath -ErrorAction Stop
+
+    $content | Set-Content -Path $localPath -Force
+    Write-Host "Téléchargé : $localPath"
+}
+
+function Process-TaskEntry {
+    param(
+        [string]$Hostname,
+        [string]$Domain,
+        [string]$TaskName,
+        [string]$RemoteScriptPath,
+        [string]$DownloadFolder
+    )
+
+    $fqdn = Get-FQDN -Hostname $Hostname -Domain $Domain
+    Write-Host "`n[$fqdn] Tâche '$TaskName'"
 
     try {
-        Get-Log -Message "Connecting to Outlook (mounted mailboxes only)..." -Level "INFO"
-        $outlook = New-Object -ComObject Outlook.Application
-        $namespace = $outlook.GetNamespace("MAPI")
-
-        $targetStore = $namespace.Stores |
-            Where-Object { $_.DisplayName -eq $MailboxDisplayName }
-
-        if (-not $targetStore) {
-            Get-Log -Message "Mailbox '$MailboxDisplayName' not found among visible Outlook stores." -Level "ERROR"
-            return
+        if ($RemoteScriptPath -like "*.ps1") {
+            Download-RemoteScript -Fqdn $fqdn -TaskName $TaskName -RemotePath $RemoteScriptPath -LocalFolder $DownloadFolder
+        } else {
+            Write-Warning "Chemin non .ps1 pour '$TaskName' : $RemoteScriptPath"
         }
-
-        $rootFolder = $targetStore.GetRootFolder()
-        $calendarFolder = $rootFolder.Folders | Where-Object { $_.DefaultItemType -eq 1 }
-
-        if (-not $calendarFolder) {
-            Get-Log -Message "No calendar found for '$MailboxDisplayName'." -Level "ERROR"
-            return
-        }
-
-        $now = Get-Date
-        $end = $now.AddDays($DaysAhead)
-        $restriction = "[Start] >= '" + $now.ToString("g") + "' AND [Start] <= '" + $end.ToString("g") + "'"
-
-        $items = $calendarFolder.Items
-        $items.Sort("[Start]")
-        $items.IncludeRecurrences = $true
-        $filtered = $items.Restrict($restriction)
-
-        $results = foreach ($item in $filtered) {
-            [PSCustomObject]@{
-                Subject  = $item.Subject
-                Start    = $item.Start
-                End      = $item.End
-                Location = $item.Location
-            }
-        }
-
-        Get-Log -Message "Found $($results.Count) event(s) in '$MailboxDisplayName' calendar." -Level "INFO"
-        return $results
-    }
-    catch {
-        Get-Log -Message "Unexpected error: $_" -Level "ERROR"
+    } catch {
+        Write-Warning "Erreur pour $fqdn - $TaskName : $_"
     }
 }
-Get-VisibleSharedCalendarEvents -MailboxDisplayName "IT-Changements" -DaysAhead 5
+
+function Main {
+    param([string]$CsvPath, [string]$DownloadFolder)
+
+    Initialize-DownloadFolder -Path $DownloadFolder
+
+    $entries = Import-Csv -Path $CsvPath
+    foreach ($entry in $entries) {
+        Process-TaskEntry -Hostname $entry.hostname -Domain $entry.domain -TaskName $entry.name -RemoteScriptPath $entry.argument -DownloadFolder $DownloadFolder
+    }
+}
+
+# Lancer le script
+Main -CsvPath $CsvPath -DownloadFolder $DownloadFolder
