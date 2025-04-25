@@ -1,77 +1,131 @@
-param(
-    [string]$CsvPath = ".\serveurs.csv",
-    [string]$DownloadFolder = ".\ScriptsTéléchargés"
-)
+function Write-Log {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$Message,
 
-function Initialize-DownloadFolder {
-    param([string]$Path)
-    if (-not (Test-Path $Path)) {
-        New-Item -ItemType Directory -Path $Path | Out-Null
+        [Parameter()]
+        [string]$Level = 'INFO'
+    )
+    
+    $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    Write-Output "$timestamp [$Level] $Message"
+}
+
+function Copy-ScriptToRemoteServer {
+    <#
+    .SYNOPSIS
+        Copies a local script file to a remote server.
+
+    .PARAMETER Server
+        The remote server to which the script will be copied.
+
+    .PARAMETER LocalScriptPath
+        The local path of the script to copy.
+
+    .PARAMETER RemoteScriptPath
+        The destination path on the remote server.
+
+    .EXAMPLE
+        Copy-ScriptToRemoteServer -Server "Server01" -LocalScriptPath "C:\Temp\myscript.ps1" -RemoteScriptPath "C:\Scripts\myscript.ps1"
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$Server,
+
+        [Parameter(Mandatory=$true)]
+        [string]$LocalScriptPath,
+
+        [Parameter(Mandatory=$true)]
+        [string]$RemoteScriptPath
+    )
+
+    Write-Log -Message "Copying script to $Server..."
+    
+    try {
+        $session = New-PSSession -ComputerName $Server -ErrorAction Stop
+        Copy-Item -Path $LocalScriptPath -Destination $RemoteScriptPath -ToSession $session -Force
+        Write-Log -Message "Script successfully copied to $Server."
+        Remove-PSSession -Session $session
+    }
+    catch {
+        Write-Log -Message "Failed to copy script to $Server. Error: $_" -Level 'ERROR'
     }
 }
 
-function Get-FQDN {
-    param([string]$Hostname, [string]$Domain)
-    return "$Hostname.$Domain"
-}
+function Invoke-RemoteScriptExecution {
+    <#
+    .SYNOPSIS
+        Executes a script on a remote server.
 
-function Download-RemoteScript {
-    param(
-        [string]$Fqdn,
-        [string]$TaskName,
-        [string]$RemotePath,
-        [string]$LocalFolder
+    .PARAMETER Server
+        The remote server where the script will be executed.
+
+    .PARAMETER RemoteScriptPath
+        The path to the script on the remote server.
+
+    .EXAMPLE
+        Invoke-RemoteScriptExecution -Server "Server01" -RemoteScriptPath "C:\Scripts\myscript.ps1"
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$Server,
+
+        [Parameter(Mandatory=$true)]
+        [string]$RemoteScriptPath
     )
 
-    $fileName = "$Fqdn`_$TaskName.ps1"
-    $localPath = Join-Path $LocalFolder $fileName
-
-    $content = Invoke-Command -ComputerName $Fqdn -ScriptBlock {
-        param($RemotePath)
-        if (Test-Path $RemotePath) {
-            Get-Content -Path $RemotePath -Raw
-        } else {
-            throw "Fichier introuvable : $RemotePath"
-        }
-    } -ArgumentList $RemotePath -ErrorAction Stop
-
-    $content | Set-Content -Path $localPath -Force
-    Write-Host "Téléchargé : $localPath"
-}
-
-function Process-TaskEntry {
-    param(
-        [string]$Hostname,
-        [string]$Domain,
-        [string]$TaskName,
-        [string]$RemoteScriptPath,
-        [string]$DownloadFolder
-    )
-
-    $fqdn = Get-FQDN -Hostname $Hostname -Domain $Domain
-    Write-Host "`n[$fqdn] Tâche '$TaskName'"
+    Write-Log -Message "Executing script on $Server..."
 
     try {
-        if ($RemoteScriptPath -like "*.ps1") {
-            Download-RemoteScript -Fqdn $fqdn -TaskName $TaskName -RemotePath $RemoteScriptPath -LocalFolder $DownloadFolder
-        } else {
-            Write-Warning "Chemin non .ps1 pour '$TaskName' : $RemoteScriptPath"
-        }
-    } catch {
-        Write-Warning "Erreur pour $fqdn - $TaskName : $_"
+        Invoke-Command -ComputerName $Server -ScriptBlock { param($path) & $path } -ArgumentList $RemoteScriptPath -ErrorAction Stop
+        Write-Log -Message "Script successfully executed on $Server."
+    }
+    catch {
+        Write-Log -Message "Failed to execute script on $Server. Error: $_" -Level 'ERROR'
     }
 }
 
-function Main {
-    param([string]$CsvPath, [string]$DownloadFolder)
+function Deploy-And-ExecuteScript {
+    <#
+    .SYNOPSIS
+        Deploys and executes a script on multiple remote servers.
 
-    Initialize-DownloadFolder -Path $DownloadFolder
+    .PARAMETER Servers
+        Array of server names.
 
-    $entries = Import-Csv -Path $CsvPath
-    foreach ($entry in $entries) {
-        Process-TaskEntry -Hostname $entry.hostname -Domain $entry.domain -TaskName $entry.name -RemoteScriptPath $entry.argument -DownloadFolder $DownloadFolder
+    .PARAMETER LocalScriptPath
+        Local path of the script to deploy.
+
+    .PARAMETER RemoteScriptPath
+        Destination path on the remote servers.
+
+    .EXAMPLE
+        Deploy-And-ExecuteScript -Servers @('Server01','Server02') -LocalScriptPath "C:\Temp\myscript.ps1" -RemoteScriptPath "C:\Scripts\myscript.ps1"
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory=$true)]
+        [string[]]$Servers,
+
+        [Parameter(Mandatory=$true)]
+        [string]$LocalScriptPath,
+
+        [Parameter(Mandatory=$true)]
+        [string]$RemoteScriptPath
+    )
+
+    foreach ($server in $Servers) {
+        Write-Log -Message "Starting deployment on $server..."
+        Copy-ScriptToRemoteServer -Server $server -LocalScriptPath $LocalScriptPath -RemoteScriptPath $RemoteScriptPath
+        Invoke-RemoteScriptExecution -Server $server -RemoteScriptPath $RemoteScriptPath
+        Write-Log -Message "Deployment completed on $server."
     }
 }
 
-# Lancer le script
-Main -CsvPath $CsvPath -DownloadFolder $DownloadFolder
+# Example usage
+<#
+Deploy-And-ExecuteScript -Servers @('Server01','Server02') -LocalScriptPath 'C:\Temp\myscript.ps1' -RemoteScriptPath 'C:\Scripts\myscript.ps1'
+#>
