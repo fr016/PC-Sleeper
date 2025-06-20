@@ -1,131 +1,51 @@
-function Write-Log {
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory=$true)]
-        [string]$Message,
-
-        [Parameter()]
-        [string]$Level = 'INFO'
-    )
-    
-    $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-    Write-Output "$timestamp [$Level] $Message"
-}
-
-function Copy-ScriptToRemoteServer {
-    <#
-    .SYNOPSIS
-        Copies a local script file to a remote server.
-
-    .PARAMETER Server
-        The remote server to which the script will be copied.
-
-    .PARAMETER LocalScriptPath
-        The local path of the script to copy.
-
-    .PARAMETER RemoteScriptPath
-        The destination path on the remote server.
-
-    .EXAMPLE
-        Copy-ScriptToRemoteServer -Server "Server01" -LocalScriptPath "C:\Temp\myscript.ps1" -RemoteScriptPath "C:\Scripts\myscript.ps1"
-    #>
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory=$true)]
-        [string]$Server,
-
-        [Parameter(Mandatory=$true)]
-        [string]$LocalScriptPath,
-
-        [Parameter(Mandatory=$true)]
-        [string]$RemoteScriptPath
-    )
-
-    Write-Log -Message "Copying script to $Server..."
-    
-    try {
-        $session = New-PSSession -ComputerName $Server -ErrorAction Stop
-        Copy-Item -Path $LocalScriptPath -Destination $RemoteScriptPath -ToSession $session -Force
-        Write-Log -Message "Script successfully copied to $Server."
-        Remove-PSSession -Session $session
-    }
-    catch {
-        Write-Log -Message "Failed to copy script to $Server. Error: $_" -Level 'ERROR'
-    }
-}
-
-function Invoke-RemoteScriptExecution {
-    <#
-    .SYNOPSIS
-        Executes a script on a remote server.
-
-    .PARAMETER Server
-        The remote server where the script will be executed.
-
-    .PARAMETER RemoteScriptPath
-        The path to the script on the remote server.
-
-    .EXAMPLE
-        Invoke-RemoteScriptExecution -Server "Server01" -RemoteScriptPath "C:\Scripts\myscript.ps1"
-    #>
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory=$true)]
-        [string]$Server,
-
-        [Parameter(Mandatory=$true)]
-        [string]$RemoteScriptPath
-    )
-
-    Write-Log -Message "Executing script on $Server..."
-
-    try {
-        Invoke-Command -ComputerName $Server -ScriptBlock { param($path) & $path } -ArgumentList $RemoteScriptPath -ErrorAction Stop
-        Write-Log -Message "Script successfully executed on $Server."
-    }
-    catch {
-        Write-Log -Message "Failed to execute script on $Server. Error: $_" -Level 'ERROR'
-    }
-}
-
-function Deploy-And-ExecuteScript {
-    <#
-    .SYNOPSIS
-        Deploys and executes a script on multiple remote servers.
-
-    .PARAMETER Servers
-        Array of server names.
-
-    .PARAMETER LocalScriptPath
-        Local path of the script to deploy.
-
-    .PARAMETER RemoteScriptPath
-        Destination path on the remote servers.
-
-    .EXAMPLE
-        Deploy-And-ExecuteScript -Servers @('Server01','Server02') -LocalScriptPath "C:\Temp\myscript.ps1" -RemoteScriptPath "C:\Scripts\myscript.ps1"
-    #>
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory=$true)]
-        [string[]]$Servers,
-
-        [Parameter(Mandatory=$true)]
-        [string]$LocalScriptPath,
-
-        [Parameter(Mandatory=$true)]
-        [string]$RemoteScriptPath
-    )
-
-    foreach ($server in $Servers) {
-        Write-Log -Message "Starting deployment on $server..."
-        Copy-ScriptToRemoteServer -Server $server -LocalScriptPath $LocalScriptPath -RemoteScriptPath $RemoteScriptPath
-        Invoke-RemoteScriptExecution -Server $server -RemoteScriptPath $RemoteScriptPath
-        Write-Log -Message "Deployment completed on $server."
-    }
-}
-
-# Example usage
 <#
-Deploy-And-ExecuteScript -Servers @('Server01','Server02') -LocalScriptPath 'C:\Temp\myscript.ps1' -RemoteScriptPath 'C:\Scripts\myscript.ps1'
+.SYNOPSIS
+    Tests the availability of LDAP on a target computer via TCP port 389.
+
+.DESCRIPTION
+    This function attempts to open a TCP connection on port 389 to a specified host.
+    Useful for checking LDAP service accessibility in Active Directory environments.
+
+.PARAMETER ComputerName
+    The name or IP address of the computer to test. Defaults to the local domain controller.
+
+.EXAMPLE
+    Test-LdapPing -ComputerName "dc01.corp.local"
+
+.EXAMPLE
+    Test-LdapPing
+
+.NOTES
+    Author: Expert PowerShell, respects SOLID principles.
 #>
+function Test-LdapPing {
+    [CmdletBinding()]
+    param (
+        [string]$ComputerName = $(try {
+            (Get-ADDomainController -Discover -Service "LDAP").HostName
+        } catch {
+            Write-Warning "Unable to auto-discover a domain controller. Specify -ComputerName manually."
+            return
+        })
+    )
+
+    $port = 389
+
+    try {
+        $tcpClient = New-Object System.Net.Sockets.TcpClient
+        $asyncResult = $tcpClient.BeginConnect($ComputerName, $port, $null, $null)
+        $connected = $asyncResult.AsyncWaitHandle.WaitOne(3000, $false)
+        if ($connected -and $tcpClient.Connected) {
+            $tcpClient.EndConnect($asyncResult)
+            $tcpClient.Close()
+            Write-Output "LDAP is reachable on $ComputerName:$port"
+            return $true
+        } else {
+            Write-Warning "LDAP NOT reachable on $ComputerName:$port (timeout or refused)"
+            return $false
+        }
+    } catch {
+        Write-Error "Error connecting to $ComputerName:$port - $_"
+        return $false
+    }
+}
