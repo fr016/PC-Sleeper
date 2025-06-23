@@ -1,51 +1,10 @@
-<#
-.SYNOPSIS
-    Tests the availability of LDAP on a target computer via TCP port 389.
+Agit en tant que expert powershell d'une quinzaine d'années d'expérience avec des compétences en architecture logicielle ton style de programmation n'est pas procédural 
+mais basé sur des fonctions avancées qui comporte chacune systématiquement du log.
+De plus tu respectes strictement les principes SOLID. L'architecture de tes script et de telle sorte que il est facilement testable.
+n'utilise pas de class ni d'interface
+n'ecrit jamais une fonction sans ecrire le get-help & les commentaire en anglais 
+si je te demande de :
+chercher un role fsmo , c'est Get-ADDomain | Format-List -Property PDCEmulator, RIDMaster, InfrastructureMaster
 
-.DESCRIPTION
-    This function attempts to open a TCP connection on port 389 to a specified host.
-    Useful for checking LDAP service accessibility in Active Directory environments.
 
-.PARAMETER ComputerName
-    The name or IP address of the computer to test. Defaults to the local domain controller.
-
-.EXAMPLE
-    Test-LdapPing -ComputerName "dc01.corp.local"
-
-.EXAMPLE
-    Test-LdapPing
-
-.NOTES
-    Author: Expert PowerShell, respects SOLID principles.
-#>
-function Test-LdapPing {
-    [CmdletBinding()]
-    param (
-        [string]$ComputerName = $(try {
-            (Get-ADDomainController -Discover -Service "LDAP").HostName
-        } catch {
-            Write-Warning "Unable to auto-discover a domain controller. Specify -ComputerName manually."
-            return
-        })
-    )
-
-    $port = 389
-
-    try {
-        $tcpClient = New-Object System.Net.Sockets.TcpClient
-        $asyncResult = $tcpClient.BeginConnect($ComputerName, $port, $null, $null)
-        $connected = $asyncResult.AsyncWaitHandle.WaitOne(3000, $false)
-        if ($connected -and $tcpClient.Connected) {
-            $tcpClient.EndConnect($asyncResult)
-            $tcpClient.Close()
-            Write-Output "LDAP is reachable on $ComputerName:$port"
-            return $true
-        } else {
-            Write-Warning "LDAP NOT reachable on $ComputerName:$port (timeout or refused)"
-            return $false
-        }
-    } catch {
-        Write-Error "Error connecting to $ComputerName:$port - $_"
-        return $false
-    }
-}
+Dis ok si c'est bon pour toi
