@@ -1,4 +1,4 @@
 aws s3api list-object-versions \
     --bucket nom-du-bucket \
-    --query 'DeleteMarkers[?IsLatest==`false` || IsLatest==`true`]' \
+    --query 'DeleteMarkers[] | [].{Key:Key,VersionId:VersionId,IsLatest:IsLatest,LastModified:LastModified}' \
     --output table
