@@ -1,4 +1,49 @@
-aws s3api list-object-versions \
-    --bucket nom-du-bucket \
-    --query 'DeleteMarkers[] | [].{Key:Key,VersionId:VersionId,IsLatest:IsLatest,LastModified:LastModified}' \
-    --output table
+function Replace-LineInFile {
+    <#
+    .SYNOPSIS
+        Replace a specific line in a file by its line number.
+
+    .DESCRIPTION
+        Reads a text file into memory, replaces the content of the specified line number
+        with the new content, and writes the file back to disk.
+
+    .PARAMETER FilePath
+        The full path of the text file.
+
+    .PARAMETER LineNumber
+        The line number to replace (1-based index).
+
+    .PARAMETER NewContent
+        The new content that will replace the specified line.
+
+    .EXAMPLE
+        Replace-LineInFile -FilePath "C:\temp\myfile.txt" -LineNumber 3 -NewContent "This is the new line"
+    #>
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+
+        [Parameter(Mandatory = $true)]
+        [int]$LineNumber,
+
+        [Parameter(Mandatory = $true)]
+        [string]$NewContent
+    )
+
+    if (-not (Test-Path -Path $FilePath)) {
+        throw "File '$FilePath' not found."
+    }
+
+    $lines = Get-Content -Path $FilePath -Raw | Out-String -Stream
+
+    if ($LineNumber -lt 1 -or $LineNumber -gt $lines.Count) {
+        throw "Line number $LineNumber is out of range. File has $($lines.Count) lines."
+    }
+
+    $lines[$LineNumber - 1] = $NewContent
+
+    Set-Content -Path $FilePath -Value $lines
+}
+
+
