@@ -1,49 +1,280 @@
-function Replace-LineInFile {
+function Get-RevokedCertificatesFromCrl {
     <#
     .SYNOPSIS
-        Replace a specific line in a file by its line number.
+    Parse a CRL (Certificate Revocation List) and list revoked certificates.
 
     .DESCRIPTION
-        Reads a text file into memory, replaces the content of the specified line number
-        with the new content, and writes the file back to disk.
+    Reads a CRL from a local file path or URL (HTTP/HTTPS/FILE), supports PEM and DER.
+    No usage of certutil. Primary decoder is the Windows CertEnroll COM API.
+    If CertEnroll is not available, falls back to a lightweight parser to extract
+    revoked serial numbers and revocation dates (reason code may be unavailable in fallback).
 
-    .PARAMETER FilePath
-        The full path of the text file.
+    .PARAMETER Path
+    Local path to a CRL file (.crl or .pem).
 
-    .PARAMETER LineNumber
-        The line number to replace (1-based index).
-
-    .PARAMETER NewContent
-        The new content that will replace the specified line.
+    .PARAMETER Url
+    Remote URL to a CRL (http/https/file).
 
     .EXAMPLE
-        Replace-LineInFile -FilePath "C:\temp\myfile.txt" -LineNumber 3 -NewContent "This is the new line"
+    Get-RevokedCertificatesFromCrl -Path 'C:\PKI\crl\MyCA.crl'
+
+    .EXAMPLE
+    Get-RevokedCertificatesFromCrl -Url 'http://pki.contoso.local/pki/MyCA.crl'
+
+    .OUTPUTS
+    PSCustomObject with properties: SerialNumber, RevocationDate, Reason, Issuer, ThisUpdate, NextUpdate
+
+    .NOTES
+    Requires Windows. CertEnroll COM is commonly present on client and server SKUs.
     #>
-    [CmdletBinding()]
+    [CmdletBinding(DefaultParameterSetName='Path')]
     param (
-        [Parameter(Mandatory = $true)]
-        [string]$FilePath,
+        [Parameter(Mandatory=$true, ParameterSetName='Path')]
+        [ValidateNotNullOrEmpty()]
+        [string]$Path,
 
-        [Parameter(Mandatory = $true)]
-        [int]$LineNumber,
-
-        [Parameter(Mandatory = $true)]
-        [string]$NewContent
+        [Parameter(Mandatory=$true, ParameterSetName='Url')]
+        [ValidateNotNullOrEmpty()]
+        [string]$Url
     )
 
-    if (-not (Test-Path -Path $FilePath)) {
-        throw "File '$FilePath' not found."
+    function Get-Bytes {
+        param([string]$SourcePath, [string]$SourceUrl)
+        if ($PSBoundParameters.ContainsKey('SourcePath')) {
+            if (-not (Test-Path -LiteralPath $SourcePath)) {
+                throw "File not found: $SourcePath"
+            }
+            return [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $SourcePath))
+        } else {
+            try {
+                $wc = New-Object System.Net.WebClient
+                return $wc.DownloadData($SourceUrl)
+            } catch {
+                throw "Failed to download CRL from $SourceUrl. $_"
+            }
+        }
     }
 
-    $lines = Get-Content -Path $FilePath -Raw | Out-String -Stream
+    function Try-Decode-With-CertEnroll {
+        param([byte[]]$Bytes)
 
-    if ($LineNumber -lt 1 -or $LineNumber -gt $lines.Count) {
-        throw "Line number $LineNumber is out of range. File has $($lines.Count) lines."
+        # Return $null if COM is unavailable or decode fails.
+        try {
+            $crl = New-Object -ComObject X509Enrollment.CX509CertificateRevocationList
+        } catch {
+            return $null
+        }
+
+        # Convert to Base64 for CertEnroll.Decode
+        $b64 = [Convert]::ToBase64String($Bytes)
+
+        # Encoding type constants (subset)
+        # 0  = XCN_CRYPT_STRING_BASE64HEADER (Base64 with header/footer)
+        # 1  = XCN_CRYPT_STRING_BASE64
+        # 12 = XCN_CRYPT_STRING_ANY
+        $encTypes = 0,1,12
+
+        foreach ($enc in $encTypes) {
+            try {
+                # InitializeDecode(EncodingType, String)
+                $crl.InitializeDecode($enc, $b64)
+
+                # Header info
+                $issuer = $crl.Issuer.Name
+                $thisUpdate = $crl.ThisUpdate
+                $nextUpdate = $crl.NextUpdate
+
+                # Revoked entries
+                $revoked = @()
+                $entries = $crl.RevokedCertificates
+                if ($entries -ne $null) {
+                    # The COM collection is 0-based and provides Count/ItemByIndex
+                    for ($i = 0; $i -lt $entries.Count; $i++) {
+                        $e = $entries.ItemByIndex($i)
+                        # Properties typically exposed:
+                        #  - SerialNumber (string)
+                        #  - RevocationDate (datetime)
+                        #  - ReasonCode (int, may be 0=Unspecified)
+                        $revoked += [pscustomobject]@{
+                            SerialNumber   = $e.SerialNumber
+                            RevocationDate = $e.RevocationDate
+                            Reason         = switch ($e.ReasonCode) {
+                                0 { 'Unspecified' }
+                                1 { 'KeyCompromise' }
+                                2 { 'CACompromise' }
+                                3 { 'AffiliationChanged' }
+                                4 { 'Superseded' }
+                                5 { 'CessationOfOperation' }
+                                6 { 'CertificateHold' }
+                                8 { 'RemoveFromCRL' }
+                                9 { 'PrivilegeWithdrawn' }
+                                10 { 'AACompromise' }
+                                default { "Unknown($($e.ReasonCode))" }
+                            }
+                            Issuer         = $issuer
+                            ThisUpdate     = $thisUpdate
+                            NextUpdate     = $nextUpdate
+                        }
+                    }
+                }
+
+                return $revoked
+            } catch {
+                continue
+            }
+        }
+
+        return $null
     }
 
-    $lines[$LineNumber - 1] = $NewContent
+    function Try-LightweightParse {
+        param([byte[]]$Bytes)
 
-    Set-Content -Path $FilePath -Value $lines
+        # Minimal PEM → DER handling
+        $isPem = ($Bytes[0] -ne 0x30) # DER SEQUENCE starts with 0x30; if not, likely PEM
+        if ($isPem) {
+            $text = [System.Text.Encoding]::ASCII.GetString($Bytes)
+            if ($text -match '-----BEGIN X509 CRL-----(.+?)-----END X509 CRL-----'s) {
+                $b64 = $Matches[1] -replace '\s',''
+                $Bytes = [Convert]::FromBase64String($b64)
+            } else {
+                throw "Input looks like text but not a PEM CRL."
+            }
+        }
+
+        # Very small DER reader to get:
+        # TBSCertList.revokedCertificates[].userCertificate (INTEGER)
+        # TBSCertList.revokedCertificates[].revocationDate (UTCTime/GeneralizedTime)
+        # This is intentionally minimal and may not handle exotic CRLs.
+        $pos = 0
+        function Read-TLV {
+            param([ref]$p)
+            $data = $script:Bytes
+            if ($p.Value -ge $data.Length) { throw "Unexpected end of data." }
+            $tag = $data[$p.Value]; $p.Value++
+            if ($p.Value -ge $data.Length) { throw "Unexpected end of data." }
+            $lenByte = $data[$p.Value]; $p.Value++
+            if ($lenByte -band 0x80) {
+                $lenLen = $lenByte -band 0x7F
+                if ($lenLen -lt 1 -or $lenLen -gt 4) { throw "Unsupported length." }
+                if ($p.Value + $lenLen -gt $data.Length) { throw "Truncated length." }
+                $len = 0
+                for ($i=0; $i -lt $lenLen; $i++) {
+                    $len = ($len -shl 8) -bor $data[$p.Value]; $p.Value++
+                }
+            } else {
+                $len = $lenByte
+            }
+            if ($p.Value + $len -gt $data.Length) { throw "Truncated value." }
+            $valStart = $p.Value
+            $p.Value += $len
+            return [pscustomobject]@{ Tag=$tag; Length=$len; Start=$valStart; End=$p.Value }
+        }
+
+        function Read-Integer {
+            param([ref]$p)
+            $t = Read-TLV -p ([ref]$p.Value)
+            if ($t.Tag -ne 0x02) { throw "Expected INTEGER." }
+            $seg = $Bytes[$t.Start..($t.End-1)]
+            # Serial is usually big-endian; format as hex (trim leading 0x00 for positive)
+            while ($seg.Length -gt 1 -and $seg[0] -eq 0x00) { $seg = $seg[1..($seg.Length-1)] }
+            return ($seg | ForEach-Object { $_.ToString('X2') }) -join ''
+        }
+
+        function Read-Time {
+            param([ref]$p)
+            $peek = $Bytes[$p.Value]
+            $t = Read-TLV -p ([ref]$p.Value)
+            $str = [System.Text.Encoding]::ASCII.GetString($Bytes[$t.Start..($t.End-1)])
+            if ($peek -eq 0x17) {
+                # UTCTime: YYMMDDhhmmssZ
+                if ($str -notmatch '^\d{12}Z$') { return $null }
+                $yy = [int]$str.Substring(0,2)
+                $century = ($yy -ge 50) ? 1900 : 2000
+                $fmt = '{0:D4}-{1}-{2}T{3}:{4}:{5}Z' -f ($century+$yy), $str.Substring(2,2), $str.Substring(4,2), $str.Substring(6,2), $str.Substring(8,2), $str.Substring(10,2)
+                return [datetime]::Parse($fmt)
+            } elseif ($peek -eq 0x18) {
+                # GeneralizedTime: YYYYMMDDhhmmssZ
+                if ($str -notmatch '^\d{14}Z$') { return $null }
+                $fmt = '{0}-{1}-{2}T{3}:{4}:{5}Z' -f $str.Substring(0,4), $str.Substring(4,2), $str.Substring(6,2), $str.Substring(8,2), $str.Substring(10,2), $str.Substring(12,2)
+                return [datetime]::Parse($fmt)
+            } else {
+                return $null
+            }
+        }
+
+        # Parse outer SEQUENCE (CertificateList)
+        $pos = 0
+        $outer = Read-TLV -p ([ref]$pos)
+        if ($outer.Tag -ne 0x30) { throw "Not a SEQUENCE at top-level. Not a CRL?" }
+
+        # TBSCertList
+        $tbsPos = $outer.Start
+        $tbs = Read-TLV -p ([ref]$tbsPos)
+        if ($tbs.Tag -ne 0x30) { throw "TBSCertList not found." }
+
+        # We need to walk inside TBSCertList to reach revokedCertificates SEQUENCE OF ...
+        $p = $tbs.Start
+
+        # Optional version [0] EXPLICIT – skip if present (tag 0xA0)
+        $tag = $Bytes[$p]
+        if ($tag -eq 0xA0) { $null = Read-TLV -p ([ref]$p) } # skip version
+
+        # signature (AlgorithmIdentifier) – skip
+        $null = Read-TLV -p ([ref]$p)
+
+        # issuer (Name) – capture string-ish (best-effort skip)
+        $issuerNode = Read-TLV -p ([ref]$p)
+        $issuer = "<unknown issuer>"
+
+        # thisUpdate
+        $thisUpdate = Read-Time -p ([ref]$p)
+
+        # nextUpdate (optional)
+        $nextTag = $Bytes[$p]
+        $nextUpdate = $null
+        if ($nextTag -in 0x17,0x18) {
+            $nextUpdate = Read-Time -p ([ref]$p)
+        }
+
+        # revokedCertificates (optional SEQUENCE OF …)
+        $revoked = @()
+        if ($p -lt $tbs.End -and $Bytes[$p] -eq 0x30) {
+            $revList = Read-TLV -p ([ref]$p)
+            $rp = $revList.Start
+            while ($rp -lt $revList.End) {
+                $entry = Read-TLV -p ([ref]$rp)   # SEQUENCE
+                $ep = $entry.Start
+
+                $serial = Read-Integer -p ([ref]$ep)
+                $revDate = Read-Time -p ([ref]$ep)
+
+                # crlEntryExtensions (optional) – we won’t dive here in lightweight mode
+                $revoked += [pscustomobject]@{
+                    SerialNumber   = $serial
+                    RevocationDate = $revDate
+                    Reason         = '<unknown>'  # Not parsed in lightweight mode
+                    Issuer         = $issuer
+                    ThisUpdate     = $thisUpdate
+                    NextUpdate     = $nextUpdate
+                }
+            }
+        }
+
+        return $revoked
+    }
+
+    # 1) Load bytes
+    $bytes = if ($PSCmdlet.ParameterSetName -eq 'Path') {
+        Get-Bytes -SourcePath $Path
+    } else {
+        Get-Bytes -SourceUrl $Url
+    }
+
+    # 2) Try CertEnroll
+    $result = Try-Decode-With-CertEnroll -Bytes $bytes
+    if ($result -ne $null) { return $result }
+
+    # 3) Fallback minimal parser
+    return Try-LightweightParse -Bytes $bytes
 }
-
-
